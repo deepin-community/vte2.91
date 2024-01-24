@@ -17,14 +17,14 @@
 project(
   'vte',
   ['c', 'cpp'],
-  version: '0.66.2',
+  version: '0.75.0',
   license: ['LGPL-3.0-or-later', 'GPL-3.0-or-later'],
   default_options: [
     'buildtype=release',
     'warning_level=0',
     'b_ndebug=false',
   ],
-  meson_version: '>= 0.50.0',
+  meson_version: '>= 0.60.0',
 )
 
 # Compiler requirements
@@ -33,27 +33,32 @@ c_req_std                 = 'gnu11'
 cxx_req_std               = 'gnu++20'
 gxx_req_version           = '10.0'
 clangxx_req_version       = '11.0'
+py_req_version            = '3.7'
 
 # Version requirements
 
-gtk3_req_version          = '3.20.0'
-gtk3_min_req_version      = '3.18'
-gtk3_max_allowed_version  = '3.20'
+gtk3_req_version          = '3.24.0'
+gtk3_min_req_version      = '3.24'
+gtk3_max_allowed_version  = '3.24'
 
-gtk4_req_version          = '4.0.1'
-gtk4_min_req_version      = '4.0'
-gtk4_max_allowed_version  = '4.0'
+gtk4_req_version          = '4.12'
+gtk4_min_req_version      = '4.12'
+gtk4_max_allowed_version  = '4.12'
 
+cairo_req_version         = '1.0'
+cairo_gobject_req_version = '1.0'
 fribidi_req_version       = '1.0.0'
 gio_req_version           = '2.52.0'
 glib_req_version          = '2.52.0'
 glib_min_req_version      = '2.52'
-glib_max_allowed_version  = '2.52'
+glib_max_allowed_version  = '2.60'
 gnutls_req_version        = '3.2.7'
 icu_uc_req_version        = '4.8'
 pango_req_version         = '1.22.0'
 pcre2_req_version         = '10.21'
 systemd_req_version       = '220'
+
+liblz4_req_version        = '1.9'
 
 # API
 
@@ -110,6 +115,7 @@ enable_debug = get_option('debugg') or get_option('debug') or get_option('buildt
 
 gnome = import('gnome')
 pkg = import('pkgconfig')
+py = import('python')
 
 # Compilers
 
@@ -159,6 +165,15 @@ if cxx.get_id() == 'clang'
   assert(cxx.version().version_compare('>=' + clangxx_req_version), 'needs clang++ >= ' + clangxx_req_version + ' for ' + cxx_req_std + ' support')
 endif
 
+# Python interpreter
+
+py_req_modules = [
+  'dataclasses',
+]
+
+python = py.find_installation(modules: py_req_modules)
+assert(python.language_version().version_compare('>=' + py_req_version), 'needs python3 >= ' + py_req_version)
+
 # Include directories
 
 top_inc = include_directories('.')
@@ -169,11 +184,12 @@ config_h = configuration_data()
 
 config_h.set_quoted('GETTEXT_PACKAGE', vte_gettext_domain)
 config_h.set_quoted('VERSION', vte_version)
-config_h.set('VTE_DEBUG', enable_debug)
-config_h.set('WITH_A11Y', get_option('a11y'))
-config_h.set('WITH_FRIBIDI', get_option('fribidi'))
-config_h.set('WITH_GNUTLS', get_option('gnutls'))
-config_h.set('WITH_ICU', get_option('icu'))
+config_h.set10('VTE_DEBUG', enable_debug)
+config_h.set10('WITH_A11Y', get_option('a11y'))
+config_h.set10('WITH_FRIBIDI', get_option('fribidi'))
+config_h.set10('WITH_GNUTLS', get_option('gnutls'))
+config_h.set10('WITH_ICU', get_option('icu'))
+config_h.set10('WITH_SIXEL', get_option('sixel'))
 
 ver = glib_min_req_version.split('.')
 config_h.set('GLIB_VERSION_MIN_REQUIRED', '(G_ENCODE_VERSION(' + ver[0] + ',' + ver[1] + '))')
@@ -191,8 +207,6 @@ if get_option('gtk3')
 endif
 
 if get_option('gtk4')
-  assert(false, 'not supported on this branch; use git master')
-
   gtk4_version_cppflags = []
 
   ver = gtk4_min_req_version.split('.')
@@ -202,30 +216,43 @@ if get_option('gtk4')
   gtk4_version_cppflags += '-DGDK_VERSION_MAX_ALLOWED=(G_ENCODE_VERSION(' + ver[0] + ',' + ver[1] + '))'
 endif
 
+# Enable libc features
 
-# FIXME AC_USE_SYSTEM_EXTENSIONS also supported non-gnu systems
-config_h.set10('_GNU_SOURCE', true)
-
-# Check headers
-
-check_headers = [
-  'locale.h',
-  'pty.h',
-  'stropts.h',
-  'sys/resource.h',
-  'sys/select.h',
-  'sys/stream.h',
-  'sys/syslimits.h',
-  'sys/termios.h',
-  'sys/types.h',
-  'sys/wait.h',
-  'termios.h',
-  'util.h',
-  'wchar.h',
+libc_feature_defines = [
+  ['_GNU_SOURCE', '1'],
+  ['_POSIX_C_SOURCE', '200809L'],
+  ['_XOPEN_SOURCE', '700'],
+  ['_XOPEN_SOURCE_EXTENDED', '1'],
 ]
 
-foreach header: check_headers
-  config_h.set('HAVE_' + header.underscorify().to_upper(), cxx.has_header(header))
+system = host_machine.system()
+
+if system == 'freebsd'
+  # Defining _POSIX_C_SOURCE above makes freebsd not expose some functionality
+  # that's hidden behind __BSD_VISIBLE.  Not defininy any of the above however
+  # makes it expose verything.
+
+  libc_feature_defines = []
+
+elif system == 'darwin'
+  # See issue #2592
+  libc_feature_defines += [
+    ['_DARWIN_C_SOURCE', '1'],
+  ]
+
+elif system == 'netbsd'
+  libc_feature_defines += [
+    ['_NETBSD_SOURCE', '1'],
+  ]
+
+elif system == 'openbsd'
+  libc_feature_defines += [
+    ['_BSD_SOURCE', '1'],
+  ]
+endif
+
+foreach f: libc_feature_defines
+  config_h.set(f[0], f[1])
 endforeach
 
 # Check for symbols
@@ -240,50 +267,166 @@ endforeach
 
 # Check for functions
 
-check_functions_required = [
-  'fork',
-  'grantpt',
-  'posix_openpt',
-  'ptsname',
-  'tcgetattr',
-  'unlockpt',
-]
+libm_dep = cxx.find_library('m')
 
-foreach func: check_functions_required
-  assert(cxx.has_function(func), func + ' not found')
-endforeach
+# Note that we cannot use compiler.has_function() due to
+# https://github.com/mesonbuild/meson/issues/8075 . So
+# Hand-roll our own check functions, also checking for
+# the correct function prototype.
 
+# [func name, func type, includes, deps, required]
 check_functions = [
-  'explicit_bzero',
-  'fdwalk',
-  'pread',
-  'pwrite',
-  'strchrnul',
+  [
+    'fork',
+    'pid_t (*func)(void)',
+    ['sys/types.h', 'unistd.h'],
+    [],
+    true,
+  ],
+  [
+    'grantpt',
+    'int (*func)(int)',
+    ['stdlib.h'],
+    [],
+    true,
+  ],
+  [
+    'posix_openpt',
+    'int (*func)(int)',
+    ['stdlib.h', 'fcntl.h'],
+    [],
+    true,
+  ],
+  [
+    'ptsname',
+    'char* (*func)(int)',
+    ['stdlib.h'],
+    [],
+    true,
+  ],
+  [
+    'tcgetattr',
+    'int (*func)(int, struct termios*)',
+    ['termios.h', 'unistd.h'],
+    [],
+    true,
+  ],
+  [
+    'unlockpt',
+    'int (*func)(int)',
+    ['stdlib.h'],
+    [],
+    true,
+  ],
+  [
+    'explicit_bzero',
+    'void (*func)(void*, size_t)',
+    ['string.h'],
+    [],
+    false,
+  ],
+  [
+    'fdwalk',
+    'int (*func)(int (*)(void*, int), void*)',
+    ['stdlib.h'],
+    [],
+    false,
+  ],
+  [
+    'pread',
+    'ssize_t (*func)(int, void*, size_t off_t)',
+     ['unistd.h'],
+     [],
+     false,
+  ],
+  [
+    'pwrite',
+    'ssize_t (*func)(int, const void*, size_t, off_t)',
+     ['unistd.h'],
+     [],
+     false,
+  ],
+  [
+    'strchrnul',
+    'const char* (*func)(const char*, int)',
+     ['string.h'],
+     [],
+     false,
+  ],
+  [
+    'close_range',
+    'int (*func)(unsigned int, unsigned int, int)',
+     ['unistd.h'],
+     [],
+     false,
+   ],
+
+  # Math functions
+
+  [
+    'ceil',
+    'double (*func)(double)',
+    ['math.h'],
+    [libm_dep],
+    true,
+  ],
+  [
+    'floor',
+    'double (*func)(double)',
+    ['math.h'],
+    [libm_dep],
+    true,
+  ],
+  [
+    'round',
+    'double (*func)(double)',
+    ['math.h'],
+    [libm_dep],
+    false,
+  ],
 ]
 
 foreach func: check_functions
-  config_h.set('HAVE_' + func.underscorify().to_upper(), cxx.has_function(func))
-endforeach
+  __name=func[0]
+  __prot=func[1]
+  __incs=func[2]
+  __deps=func[3]
+  __reqd=func[4]
 
-# Math functions
+  __code = ''
+  foreach __inc: __incs
+    __code += '''
+    #if __has_include(<@0@>)
+    #include <@0@>
+    #endif
+    '''.format(__inc)
+  endforeach
 
-libm_dep = cxx.find_library('m')
+  __code += '''
+    int main(void) {
+      @0@ = &@1@;
+      long long b = (long long)func;
+      return (int)b;
+    }
+  '''.format(__prot, __name)
 
-check_math_functions_required = [
-  'ceil',
-  'floor',
-]
+  __args = []
+  foreach f: libc_feature_defines
+    __args += '-D@0@=@1@'.format(f[0], f[1])
+  endforeach
 
-foreach func: check_math_functions_required
-  assert(cxx.has_function(func, dependencies: libm_dep), func + ' not found')
-endforeach
+  __have = cxx.compiles(
+    __code,
+    args: __args,
+    dependencies: __deps,
+    name: __name,
+  )
 
-check_math_functions = [
-  'round',
-]
-
-foreach func: check_math_functions
-  config_h.set('HAVE_' + func.underscorify().to_upper(), cxx.has_function(func, dependencies: libm_dep))
+  if __reqd
+    assert(__have, __name + ' not found')
+  else
+    config_h.set10('HAVE_' + __name.underscorify().to_upper(), __have)
+  endif
 endforeach
 
 # Compiler
@@ -319,6 +462,7 @@ compiler_flags_common = [
   '-Wmissing-format-attribute',
   '-Wmissing-include-dirs',
   '-Wmissing-noreturn',
+  '-Wno-deprecated-declarations',
   '-Wno-address-of-packed-member',
   '-Wno-c99-designator',
   '-Wno-missing-field-initializers',
@@ -348,8 +492,6 @@ compiler_flags_common = [
   '-fdiagnostics-show-option',
   '-fno-common',
   '-fno-semantic-interposition',
-  '-fstack-protector',
-  '-fstack-protector-strong',
 ]
 
 if enable_debug
@@ -427,8 +569,12 @@ foreach flags : compiler_flags_common_multi
   endif
 endforeach
 
-# ... and now make these flags the default
+release_args = []
+if not enable_debug
+  release_args += ['-DG_DISABLE_ASSERT', '-DG_DISABLE_CAST_CHECKS']
+endif
 
+# ... and now make these flags the default
 add_project_arguments(global_cflags, language: 'c')
 add_project_arguments(global_cxxflags, language: 'cpp')
 
@@ -437,6 +583,10 @@ add_project_arguments(global_cxxflags, language: 'cpp')
 linker_flags = [
   ['-Wl,-Bsymbolic', false,],
   ['-Wl,-Bsymbolic-functions', get_option('_b_symbolic_functions'),],
+
+  # See issue vte#2535.
+  ['-fstack-protector', false],
+  ['-fstack-protector-strong', false],
 ]
 
 foreach flag: linker_flags
@@ -455,13 +605,15 @@ endforeach
 
 # Dependencies
 
-gio_dep      = dependency('gio-2.0',    version: '>=' + gio_req_version)
-glib_dep     = dependency('glib-2.0',   version: '>=' + glib_req_version)
-gobject_dep  = dependency('gobject-2.0')
-pango_dep    = dependency('pango',      version: '>=' + pango_req_version)
-pcre2_dep    = dependency('libpcre2-8', version: '>=' + pcre2_req_version)
-pthreads_dep = dependency('threads')
-zlib_dep     = dependency('zlib')
+cairo_dep         = dependency('cairo', version: '>=' + cairo_req_version)
+cairo_gobject_dep = dependency('cairo-gobject', version: '>=' + cairo_gobject_req_version)
+gio_dep           = dependency('gio-2.0',    version: '>=' + gio_req_version)
+glib_dep          = dependency('glib-2.0',   version: '>=' + glib_req_version)
+gobject_dep       = dependency('gobject-2.0')
+pango_dep         = dependency('pango',      version: '>=' + pango_req_version)
+pcre2_dep         = dependency('libpcre2-8', version: '>=' + pcre2_req_version)
+pthreads_dep      = dependency('threads')
+liblz4_dep        = dependency('liblz4', version: '>=' + liblz4_req_version)
 
 if get_option('fribidi')
   fribidi_dep = dependency('fribidi', version: '>=' + fribidi_req_version)
@@ -499,7 +651,7 @@ else
   systemd_dep = dependency('', required: false)
 endif
 
-config_h.set('WITH_SYSTEMD', systemd_dep.found())
+config_h.set10('WITH_SYSTEMD', systemd_dep.found())
 
 # Write config.h
 
@@ -517,22 +669,14 @@ subdir('bindings')
 subdir('po')
 
 if get_option('docs')
-  assert(meson.version().version_compare('>= 0.55.0'),
-    'meson >= 0.55 is required to build docs'
-  )
-
   subdir('doc/reference')
 endif
 
 # Dist
 
-# Meson bug https://github.com/mesonbuild/meson/issues/8440 breaks using vte
-# as subproject; see vte#345.
-if meson.version().version_compare('>= 0.58.0') or not meson.is_subproject()
-  meson.add_dist_script(
-    find_program('meson_changelog.sh'),
-  )
-endif
+meson.add_dist_script(
+  find_program('meson_changelog.sh'),
+)
 
 # Simple compat Makefile
 
@@ -577,14 +721,25 @@ output += '  GTK+ 4.0:     ' + get_option('gtk4').to_string() + '\n'
 output += '  ICU:          ' + get_option('icu').to_string() + '\n'
 output += '  GIR:          ' + get_option('gir').to_string() + '\n'
 output += '  systemd:      ' + systemd_dep.found().to_string() + '\n'
+output += '  SIXEL:        ' + get_option('sixel').to_string() + '\n'
 output += '  Glade:        ' + get_option('glade').to_string() + '\n'
 output += '  Vala:         ' + get_option('vapi').to_string() + '\n'
 output += '\n'
 output += '  Prefix:       ' + get_option('prefix') + '\n'
 message(output)
 
-if get_option('gtk4')
-  warning('GTK+ 4.0 support is experimental; API and ABI are subject to change without notice\n')
+# Check stable/unstable status
+
+if (vte_minor_version % 2) != 0
+  if (vte_micro_version >= 99)
+    warning('This is a release candidate release!\n')
+  elif (vte_micro_version > 90)
+    warning('This is a beta release!\n')
+  else
+    warning('This is an unstable development release!\n')
+  endif
+else
+  message('This is a stable release.')
 endif
 
 # Done

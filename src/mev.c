@@ -17,22 +17,17 @@
 
 #include <config.h>
 #include <sys/types.h>
-#ifdef HAVE_SYS_TERMIOS_H
-#include <sys/termios.h>
-#endif
 #include <sys/time.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <string.h>
-#ifdef HAVE_TERMIOS_H
 #include <termios.h>
-#endif
 #include <unistd.h>
 #include <glib.h>
 #include "caps.hh"
 
-#ifdef HAVE_SYS_SELECT_H
+#if __has_include(<sys/select.h>)
 #include <sys/select.h>
 #endif
 

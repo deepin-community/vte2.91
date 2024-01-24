@@ -23,6 +23,7 @@
 
 #include <glib.h>
 #include <gio/gio.h>
+#include <cairo.h>
 #include <pango/pango.h>
 #include <gtk/gtk.h>
 
@@ -32,6 +33,10 @@
 #include "vteregex.h"
 
 G_BEGIN_DECLS
+
+#define VTE_TYPE_EVENT_CONTEXT (vte_event_context_get_type())
+
+typedef struct _VteEventContext VteEventContext;
 
 #define VTE_TYPE_TERMINAL            (vte_terminal_get_type())
 #define VTE_TERMINAL(obj)            (G_TYPE_CHECK_INSTANCE_CAST ((obj), VTE_TYPE_TERMINAL, VteTerminal))
@@ -43,7 +48,6 @@ G_BEGIN_DECLS
 typedef struct _VteTerminal             VteTerminal;
 typedef struct _VteTerminalClass        VteTerminalClass;
 typedef struct _VteTerminalClassPrivate VteTerminalClassPrivate;
-typedef struct _VteCharAttributes       VteCharAttributes;
 
 /**
  * VteTerminal:
@@ -109,25 +113,27 @@ struct _VteTerminalClass {
 
 	void (*bell)(VteTerminal* terminal);
 
+#if _VTE_GTK == 3
+        /* Compatibility padding due to fedora patches intruding on our ABI */
+        /*< private >*/
+        gpointer _extra_padding[3];
+#endif /* _VTE_GTK == 3 */
+
+        void (*setup_context_menu)(VteTerminal* terminal,
+                                   VteEventContext const* context);
+
+        /* Add new vfuncs just above, and subtract from the padding below. */
+
         /* Padding for future expansion. */
-        gpointer padding[16];
+#if _VTE_GTK == 3
+        gpointer _padding[12];
+#elif _VTE_GTK == 4
+        gpointer _padding[15];
+#endif /* _VTE_GTK */
 
 // FIXMEgtk4 use class private data instead
         VteTerminalClassPrivate *priv;
 };
-
-/* The structure we return as the supplemental attributes for strings. */
-struct _VteCharAttributes {
-        /*< private >*/
-        long row, column;  /* logical column */
-	PangoColor fore, back;
-	guint underline:1, strikethrough:1, columns:4;
-};
-
-typedef gboolean (*VteSelectionFunc)(VteTerminal *terminal,
-                                     glong column,
-                                     glong row,
-                                     gpointer data) _VTE_GNUC_NONNULL(1);
 
 /* The widget's type. */
 _VTE_PUBLIC
@@ -204,6 +210,9 @@ void vte_terminal_copy_clipboard_format(VteTerminal *terminal,
 _VTE_PUBLIC
 void vte_terminal_paste_clipboard(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 _VTE_PUBLIC
+void vte_terminal_paste_text(VteTerminal *terminal,
+                             char const* text) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+_VTE_PUBLIC
 void vte_terminal_copy_primary(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 _VTE_PUBLIC
 void vte_terminal_paste_primary(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
@@ -229,6 +238,12 @@ void vte_terminal_set_font_scale(VteTerminal *terminal,
                                  gdouble scale) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 _VTE_PUBLIC
 gdouble vte_terminal_get_font_scale(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+void vte_terminal_set_font_options(VteTerminal *terminal,
+                                   cairo_font_options_t const* font_options) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+_VTE_PUBLIC
+cairo_font_options_t const* vte_terminal_get_font_options(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 
 _VTE_PUBLIC
 void vte_terminal_set_cell_width_scale(VteTerminal *terminal,
@@ -257,13 +272,17 @@ _VTE_PUBLIC
 void vte_terminal_set_scroll_on_output(VteTerminal *terminal,
                                        gboolean scroll) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 _VTE_PUBLIC
+void vte_terminal_set_scroll_on_insert(VteTerminal *terminal,
+                                       gboolean scroll) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+_VTE_PUBLIC
+gboolean vte_terminal_get_scroll_on_insert(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+_VTE_PUBLIC
 gboolean vte_terminal_get_scroll_on_output(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 _VTE_PUBLIC
 void vte_terminal_set_scroll_on_keystroke(VteTerminal *terminal,
 					  gboolean scroll) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 _VTE_PUBLIC
 gboolean vte_terminal_get_scroll_on_keystroke(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
-
 _VTE_PUBLIC
 void vte_terminal_set_enable_fallback_scrolling(VteTerminal *terminal,
                                                 gboolean enable) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
@@ -352,6 +371,15 @@ gboolean vte_terminal_get_allow_hyperlink(VteTerminal *terminal) _VTE_CXX_NOEXCE
 _VTE_PUBLIC
 gboolean vte_terminal_get_has_selection(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 
+_VTE_PUBLIC
+char* vte_terminal_get_text_selected(VteTerminal* terminal,
+                                     VteFormat format) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+
+_VTE_PUBLIC
+char* vte_terminal_get_text_selected_full(VteTerminal* terminal,
+                                          VteFormat format,
+                                          gsize* length) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+
 /* Set what happens when the user strikes backspace or delete. */
 _VTE_PUBLIC
 void vte_terminal_set_backspace_binding(VteTerminal *terminal,
@@ -386,24 +414,19 @@ void vte_terminal_reset(VteTerminal *terminal,
                         gboolean clear_tabstops,
 			gboolean clear_history) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 
-/* Read the contents of the terminal, using a callback function to determine
- * if a particular location on the screen (0-based) is interesting enough to
- * include.  Each byte in the returned string will have a corresponding
- * VteCharAttributes structure in the passed GArray, if the array was not %NULL.
- * Note that it will have one entry per byte, not per character, so indexes
- * should match up exactly. */
 _VTE_PUBLIC
-char *vte_terminal_get_text(VteTerminal *terminal,
-			    VteSelectionFunc is_selected,
-			    gpointer user_data,
-			    GArray *attributes) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+char* vte_terminal_get_text_format(VteTerminal* terminal,
+                                   VteFormat format) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+
 _VTE_PUBLIC
-char *vte_terminal_get_text_range(VteTerminal *terminal,
-				  glong start_row, glong start_col,
-				  glong end_row, glong end_col,
-				  VteSelectionFunc is_selected,
-				  gpointer user_data,
-				  GArray *attributes) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+char* vte_terminal_get_text_range_format(VteTerminal* terminal,
+                                         VteFormat format,
+                                         long start_row,
+                                         long start_col,
+                                         long end_row,
+                                         long end_col,
+                                         gsize* length) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+
 _VTE_PUBLIC
 void vte_terminal_get_cursor_position(VteTerminal *terminal,
 				      glong *column,
@@ -414,6 +437,13 @@ void vte_terminal_get_cursor_position(VteTerminal *terminal,
 _VTE_PUBLIC
 char *vte_terminal_hyperlink_check_event(VteTerminal *terminal,
                                          GdkEvent *event) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1, 2) G_GNUC_MALLOC;
+
+#elif _VTE_GTK == 4
+
+_VTE_PUBLIC
+char* vte_terminal_check_hyperlink_at(VteTerminal* terminal,
+                                      double x,
+                                      double y) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
 
 #endif /* _VTE_GTK */
 
@@ -458,6 +488,32 @@ gboolean vte_terminal_event_check_regex_simple(VteTerminal *terminal,
                                                gsize n_regexes,
                                                guint32 match_flags,
                                                char **matches) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1, 2);
+
+#elif _VTE_GTK == 4
+
+_VTE_PUBLIC
+char* vte_terminal_check_match_at(VteTerminal* terminal,
+                                  double x,
+                                  double y,
+                                  int* tag) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+
+_VTE_PUBLIC
+char** vte_terminal_check_regex_array_at(VteTerminal* terminal,
+                                         double x,
+                                         double y,
+                                         VteRegex** regexes,
+                                         gsize n_regexes,
+                                         guint32 match_flags,
+                                         gsize* n_matches) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+
+_VTE_PUBLIC
+gboolean vte_terminal_check_regex_simple_at(VteTerminal* terminal,
+                                            double x,
+                                            double y,
+                                            VteRegex** regexes,
+                                            gsize n_regexes,
+                                            guint32 match_flags,
+                                            char** matches) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 
 #endif /* _VTE_GTK */
 
@@ -516,16 +572,12 @@ gboolean vte_terminal_get_input_enabled (VteTerminal *terminal) _VTE_CXX_NOEXCEP
 
 /* rarely useful functions */
 
-#if _VTE_GTK == 3
-
 _VTE_PUBLIC
 void vte_terminal_set_clear_background(VteTerminal* terminal,
                                        gboolean setting) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 _VTE_PUBLIC
 void vte_terminal_get_color_background_for_draw(VteTerminal* terminal,
                                                 GdkRGBA* color) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1, 2);
-
-#endif /* _VTE_GTK == 3 */
 
 /* Writing contents out */
 _VTE_PUBLIC
@@ -544,6 +596,65 @@ void vte_terminal_set_enable_sixel(VteTerminal *terminal,
 
 _VTE_PUBLIC
 gboolean vte_terminal_get_enable_sixel(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+void vte_terminal_set_xalign(VteTerminal* terminal,
+                             VteAlign align) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+VteAlign vte_terminal_get_xalign(VteTerminal* terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+void vte_terminal_set_yalign(VteTerminal* terminal,
+                             VteAlign align) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+VteAlign vte_terminal_get_yalign(VteTerminal* terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+void vte_terminal_set_xfill(VteTerminal* terminal,
+                            gboolean fill) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+gboolean vte_terminal_get_xfill(VteTerminal* terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+void vte_terminal_set_yfill(VteTerminal* terminal,
+                            gboolean fill) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+gboolean vte_terminal_get_yfill(VteTerminal* terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+void vte_terminal_set_context_menu_model(VteTerminal* terminal,
+                                         GMenuModel* model) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+GMenuModel* vte_terminal_get_context_menu_model(VteTerminal* terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+void vte_terminal_set_context_menu(VteTerminal* terminal,
+                                   GtkWidget* menu) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+GtkWidget* vte_terminal_get_context_menu(VteTerminal* terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+_VTE_PUBLIC
+GType vte_event_context_get_type(void);
+
+#if _VTE_GTK == 3
+
+_VTE_PUBLIC
+GdkEvent* vte_event_context_get_event(VteEventContext const* context) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+#elif _VTE_GTK == 4
+
+_VTE_PUBLIC
+gboolean vte_event_context_get_coordinates(VteEventContext const* context,
+                                           double* x,
+                                           double* y) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
+
+#endif /* VTE_GTK */
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VteTerminal, g_object_unref)
 

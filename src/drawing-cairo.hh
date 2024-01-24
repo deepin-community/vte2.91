@@ -18,169 +18,75 @@
 
 #pragma once
 
-#include <cstdint>
-
-#include <memory>
-
-#include <cairo.h>
-
-#include <glib.h>
-#include <gtk/gtk.h>
-
-#include "cairo-glue.hh"
-#include "fwd.hh"
-#include "minifont.hh"
-#include "vtetypes.hh"
-#include "vteunistr.h"
+#include "drawing-context.hh"
 
 namespace vte {
 namespace view {
 
-class DrawingContext {
+class DrawingCairo final : public DrawingContext {
 public:
+        DrawingCairo() noexcept = default;
+        ~DrawingCairo() noexcept override = default;
 
-        /* A request to draw a particular character spanning a given number of columns
-           at the given location.  Unlike most APIs, (x,y) specifies the top-left
-           corner of the cell into which the character will be drawn instead of the
-           left end of the baseline. */
-        struct TextRequest {
-                vteunistr c;
-                int16_t x, y, columns;
+        DrawingCairo(DrawingCairo const&) = delete;
+        DrawingCairo(DrawingCairo&&) = delete;
+        DrawingCairo& operator=(DrawingCairo const&) = delete;
+        DrawingCairo& operator=(DrawingCairo&&) = delete;
 
-                /* Char has RTL resolved directionality, mirror if mirrorable. */
-                uint8_t mirror : 1;
+        cairo_t* begin_cairo(int x,
+                             int y,
+                             int width,
+                             int height) const override;
+        void end_cairo(cairo_t *cr) const override;
 
-                /* Add box drawing chars to the set of mirrorable characters. */
-                uint8_t box_mirror : 1;
-        };
+        void clip(Rectangle const* rect) const override;
+        void unclip() const override;
 
-        DrawingContext() noexcept = default;
-        ~DrawingContext();
-
-        DrawingContext(DrawingContext const&) = delete;
-        DrawingContext(DrawingContext&&) = delete;
-        DrawingContext& operator=(DrawingContext const&) = delete;
-        DrawingContext& operator=(DrawingContext&&) = delete;
-
-        void set_cairo(cairo_t* cr) noexcept;
-        auto cairo() const noexcept { return m_cr; }
-
-        void clip(cairo_rectangle_int_t const* rect);
-        void unclip();
+        void translate(double x,
+                       double y) const override;
+        void untranslate() const override;
 
         void clear(int x,
                    int y,
                    int width,
                    int height,
                    vte::color::rgb const* color,
-                   double alpha);
-        void clear_font_cache();
-        void set_text_font(GtkWidget* widget,
-                           PangoFontDescription const* fontdesc,
-                           double cell_width_scale,
-                           double cell_height_scale);
-        void get_text_metrics(int* cell_width,
-                              int* cell_height,
-                              int* char_ascent,
-                              int* char_descent,
-                              GtkBorder* char_spacing);
-        void get_char_edges(vteunistr c,
-                            int columns,
-                            uint32_t attr,
-                            int& left,
-                            int& right);
-        void draw_text(TextRequest* requests,
-                       gsize n_requests,
-                       uint32_t attr,
-                       vte::color::rgb const* color,
-                       double alpha);
-        bool draw_char(TextRequest* request,
-                       uint32_t attr,
-                       vte::color::rgb const* color,
-                       double alpha);
-        bool has_char(vteunistr c,
-                      uint32_t attr);
+                   double alpha) const override;
+        void fill_rectangle(int x,
+                            int y,
+                            int width,
+                            int height,
+                            vte::color::rgb const* color) const override;
         void fill_rectangle(int x,
                             int y,
                             int width,
                             int height,
                             vte::color::rgb const* color,
-                            double alpha);
+                            double alpha) const override;
         void draw_rectangle(int x,
                             int y,
                             int width,
                             int height,
-                            vte::color::rgb const* color,
-                            double alpha);
-        void draw_line(int x,
-                       int y,
-                       int xp,
-                       int yp,
-                       int line_width,
-                       vte::color::rgb const *color,
-                       double alpha);
+                            vte::color::rgb const* color) const override;
 
-        void draw_undercurl(int x,
-                            double y,
-                            double line_width,
-                            int count,
-                            vte::color::rgb const* color,
-                            double alpha);
+        void set_cairo(cairo_t* cr) noexcept;
 
-        auto cell_width()  const noexcept { return m_cell_width; }
-        auto cell_height() const noexcept { return m_cell_height; }
+        void draw_surface_with_color_mask(cairo_surface_t *surface,
+                                          int x,
+                                          int y,
+                                          int width,
+                                          int height,
+                                          vte::color::rgb const* color) const override;
 
-private:
-        void set_source_color_alpha (vte::color::rgb const* color,
-                                     double alpha);
-        void draw_graphic(vteunistr c,
-                          uint32_t attr,
-                          vte::color::rgb const* fg,
-                          int x,
-                          int y,
-                          int font_width,
-                          int columns,
-                          int font_height);
+protected:
         void draw_text_internal(TextRequest* requests,
                                 gsize n_requests,
                                 uint32_t attr,
-                                vte::color::rgb const* color,
-                                double alpha);
+                                vte::color::rgb const* color) override;
 
-        //        std::array<vte::base::RefPtr<FontInfo>, 4> m_fonts{};
-	FontInfo* m_fonts[4]{nullptr, nullptr, nullptr, nullptr};
-        int m_cell_width{1};
-        int m_cell_height{1};
-        GtkBorder m_char_spacing{1, 1, 1, 1};
-
-	cairo_t *m_cr{nullptr}; // unowned
-
-        Minifont m_minifont{};
-
-        /* Cache the undercurl's rendered look. */
-        vte::Freeable<cairo_surface_t> m_undercurl_surface{};
-
-}; // class DrawingContext
+private:
+        cairo_t *m_cr{nullptr}; // unowned
+};
 
 } // namespace view
 } // namespace vte
-
-double
-_vte_draw_get_undercurl_height(gint width, double line_width);
-
-class _vte_draw_autoclip_t {
-private:
-        vte::view::DrawingContext& m_draw;
-public:
-        _vte_draw_autoclip_t(vte::view::DrawingContext& draw,
-                             cairo_rectangle_int_t const* rect)
-                : m_draw{draw}
-        {
-                m_draw.clip(rect);
-        }
-
-        ~_vte_draw_autoclip_t()
-        {
-                m_draw.unclip();
-        }
-};

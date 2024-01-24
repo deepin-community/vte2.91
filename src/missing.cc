@@ -17,8 +17,9 @@
 
 #include "config.h"
 
-#ifdef HAVE_SYS_RESOURCE_H
+#if __has_include(<sys/resource.h>)
 #include <sys/resource.h>
+#define HAVE_SYS_RESOURCE_H
 #endif
 
 #include <glib-unix.h>
@@ -26,6 +27,11 @@
 
 #ifdef __linux__
 #include <sys/syscall.h>  /* for syscall and SYS_getdents64 */
+#endif
+
+#ifdef __APPLE__
+#include <libproc.h>
+#include <sys/proc_info.h>
 #endif
 
 #include "missing.hh"
@@ -38,7 +44,7 @@
  * Copyright 2000 Red Hat, Inc.
  */
 
-#ifndef HAVE_FDWALK
+#if !HAVE_FDWALK
 
 #ifdef __linux__
 
@@ -119,7 +125,7 @@ getrlimit_NOFILE_max(void)
 
 #endif /* HAVE_SYS_RESOURCE_H */
 
-#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__APPLE__)
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__APPLE__)
         /* Use sysconf() function provided by the system if it is known to be
          * async-signal safe.
          */
@@ -134,17 +140,17 @@ getrlimit_NOFILE_max(void)
         return RLIM_INFINITY;
 }
 
-#ifdef __linux__
+#if !HAVE_CLOSE_RANGE
 
-static inline int
-_vte_close_range(int first_fd,
-                 int last_fd,
-                 unsigned flags)
+int
+close_range(unsigned int first_fd,
+            unsigned int last_fd,
+            unsigned int flags)
 {
-#ifdef SYS_close_range
+#if defined(__linux__) && defined(SYS_close_range)
         return syscall(SYS_close_range,
-                       unsigned(first_fd),
-                       last_fd == -1 ? ~0u : unsigned(last_fd),
+                       first_fd,
+                       last_fd == unsigned(-1) ? ~0u : last_fd,
                        flags);
 #else
         errno = ENOSYS;
@@ -152,7 +158,7 @@ _vte_close_range(int first_fd,
 #endif
 }
 
-#endif /* __linux__ */
+#endif /* !HAVE_CLOSE_RANGE */
 
 /* This function is called between fork and execve/_exit and so must be
  * async-signal-safe; see man:signal-safety(7).
@@ -169,17 +175,6 @@ fdwalk(int (*cb)(void *data, int fd),
   int res = 0;
 
 #ifdef __linux__
-
-  /* First, try close_range(CLOEXEC) which is faster than the methods
-   * below, and works even if /proc is not available.
-   */
-  res = _vte_close_range(0, -1, CLOSE_RANGE_CLOEXEC);
-  if (res == 0)
-          return 0;
-  if (res == -1 &&
-      errno != ENOSYS /* old kernel */ &&
-      errno != EINVAL /* flags not supported */)
-          return res;
 
   /* Fall back to iterating over /proc/self/fd.
    * Avoid use of opendir/closedir since these are not async-signal-safe.
@@ -224,6 +219,36 @@ fdwalk(int (*cb)(void *data, int fd),
     return -1;
   }
 
+#if defined(__APPLE__)
+  /* proc_pidinfo isn't documented as async-signal-safe but looking at the implementation
+   * in the darwin tree here:
+   *
+   * https://opensource.apple.com/source/Libc/Libc-498/darwin/libproc.c.auto.html
+   *
+   * It's just a thin wrapper around a syscall, so it's probably okay.
+   */
+  {
+    char buffer[open_max * PROC_PIDLISTFD_SIZE];
+    ssize_t buffer_size;
+
+    buffer_size = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, buffer, sizeof(buffer));
+
+    if (buffer_size > 0 &&
+        sizeof(buffer) >= (size_t)buffer_size &&
+        (buffer_size % PROC_PIDLISTFD_SIZE) == 0)
+      {
+        const struct proc_fdinfo *fd_info = (const struct proc_fdinfo *)buffer;
+        size_t number_of_fds = (size_t)buffer_size / PROC_PIDLISTFD_SIZE;
+
+        for (size_t i = 0; i < number_of_fds; i++)
+          if ((res = cb(data, fd_info[i].proc_fd)) != 0)
+            break;
+
+        return res;
+      }
+  }
+#endif
+
   for (fd = 0; fd < int(open_max); fd++)
       if ((res = cb (data, fd)) != 0)
           break;
@@ -232,7 +257,7 @@ fdwalk(int (*cb)(void *data, int fd),
 }
 #endif /* !HAVE_FDWALK */
 
-#ifndef HAVE_STRCHRNUL
+#if !HAVE_STRCHRNUL
 /* Copied from glib */
 char*
 strchrnul(char const* s,

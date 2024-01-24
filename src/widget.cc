@@ -32,10 +32,6 @@
 #include "debug.h"
 #include "gobject-glue.hh"
 
-#if VTE_GTK == 4
-#include "graphene-glue.hh"
-#endif
-
 #if VTE_GTK == 3
 #define VTE_STYLE_CLASS_MONOSPACE GTK_STYLE_CLASS_MONOSPACE
 #elif VTE_GTK == 4
@@ -149,6 +145,118 @@ catch (...)
         vte::log_exception();
 }
 
+// Callbacks for context menu setup
+
+void
+Widget::unset_context_menu(GtkWidget* widget,
+                           bool deactivate,
+                           bool notify)
+{
+        if (!widget || widget != m_menu_showing.get())
+                return;
+
+#if VTE_GTK == 4
+        // Cancel idle
+        if (m_context_menu_unset_on_idle_source != 0) {
+                g_source_remove(m_context_menu_unset_on_idle_source);
+                m_context_menu_unset_on_idle_source = 0;
+        }
+#endif // VTE_GTK == 4
+
+        // Take ownership of the menu
+        auto menu = std::move(m_menu_showing);
+
+        // Disconnect all signal handlers
+        g_signal_handlers_disconnect_matched(menu.get(),
+                                             G_SIGNAL_MATCH_DATA,
+                                             0, 0,
+                                             nullptr,
+                                             nullptr,
+                                             this);
+
+#if VTE_GTK == 3
+        if (gtk_menu_get_attach_widget(GTK_MENU(menu.get())) || deactivate) {
+                gtk_menu_shell_deactivate(GTK_MENU_SHELL(menu.get()));
+        }
+        if (gtk_menu_get_attach_widget(GTK_MENU(menu.get()))) {
+                // This will remove the ref from the attach widget,
+                // and (potentially) destroy the menu
+                gtk_menu_detach(GTK_MENU(menu.get()));
+                menu.reset();
+        }
+
+#elif VTE_GTK == 4
+        gtk_widget_unparent(menu.get());
+
+        if (gtk_widget_get_visible(menu.get())) {
+                gtk_popover_popdown(GTK_POPOVER(menu.get()));
+                menu.reset();
+        }
+
+#endif // VTE_GTK
+
+        if (notify)
+                emit_setup_context_menu(nullptr);
+}
+
+#if VTE_GTK == 3
+
+static void
+context_menu_selection_done_cb(GtkWidget *menu,
+                               vte::platform::Widget* that) noexcept
+try
+{
+        _vte_debug_print(VTE_DEBUG_EVENTS, "Context menu selection done\n");
+        that->unset_context_menu(menu, false);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+static void
+context_menu_detach_cb(GtkWidget* attach_widget,
+                       GtkWidget* menu) noexcept
+try
+{
+        _vte_debug_print(VTE_DEBUG_EVENTS, "Context menu detached\n");
+
+        auto const that = Widget::from_terminal(VTE_TERMINAL(attach_widget));
+        that->unset_context_menu(menu, true);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+#elif VTE_GTK == 4
+
+static void
+context_menu_unset_on_idle_cb(vte::platform::Widget* that) noexcept
+try
+{
+        that->unset_context_menu_on_idle();
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+static void
+context_menu_closed_cb(GtkWidget* menu,
+                       vte::platform::Widget* that) noexcept
+try
+{
+        _vte_debug_print(VTE_DEBUG_EVENTS, "Context menu closed\n");
+        that->context_menu_closed(menu);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+#endif // VTE_GTK
+
 #if VTE_GTK == 4
 
 /* Callbacks for event controllers */
@@ -196,6 +304,32 @@ catch (...)
 {
         vte::log_exception();
         return false;
+}
+
+static void
+long_press_pressed_cb(GtkGestureLongPress* gesture,
+                      double x,
+                      double y,
+                      Widget* that) noexcept
+try
+{
+        that->gesture_long_press_pressed(gesture, x, y);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+static void
+long_press_cancelled_cb(GtkGestureLongPress* gesture,
+                        Widget* that) noexcept
+try
+{
+        that->gesture_long_press_cancelled(gesture);
+}
+catch (...)
+{
+        vte::log_exception();
 }
 
 static void
@@ -399,6 +533,43 @@ catch (...)
         vte::log_exception();
 }
 
+static void
+root_realize_cb(GtkRoot* r,
+                vte::platform::Widget* that) noexcept
+try
+{
+        that->root_realize();
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+static void
+root_unrealize_cb(GtkRoot* r,
+                vte::platform::Widget* that) noexcept
+try
+{
+        that->root_unrealize();
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+static void
+root_surface_state_notify_cb(GdkToplevel* toplevel,
+                             GParamSpec* pspec,
+                             Widget* that) noexcept
+try
+{
+        that->root_surface_state_notify();
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
 #endif /* VTE_GTK == 4 */
 
 Widget::Widget(VteTerminal* t)
@@ -438,6 +609,10 @@ try
                 g_signal_handlers_disconnect_by_func(m_vadjustment.get(),
                                                      (void*)vadjustment_value_changed_cb,
                                                      this);
+        }
+
+        if (m_menu_showing) {
+                unset_context_menu(m_menu_showing.get(), true, false);
         }
 
         m_widget = nullptr;
@@ -558,7 +733,7 @@ void
 Widget::clipboard_request_received_cb(Clipboard const& clipboard,
                                       std::string_view const& text)
 {
-        terminal()->widget_clipboard_text_received(clipboard, text);
+        terminal()->widget_paste(text);
 }
 
 void
@@ -595,9 +770,10 @@ Widget::clipboard_request_text(ClipboardType type) noexcept
 
 void
 Widget::clipboard_set_text(ClipboardType type,
-                           std::string_view const& str) noexcept
+                           char const* str,
+                           size_t size) noexcept
 {
-        clipboard_get(type).set_text(str);
+        clipboard_get(type).set_text(str, size);
 }
 
 #if VTE_GTK == 4
@@ -681,6 +857,17 @@ Widget::constructed() noexcept
                          G_CALLBACK(click_stopped_cb), this);
         g_signal_connect(gesture.get(), "unpaired-release",
                          G_CALLBACK(click_unpaired_release_cb), this);
+        gtk_event_controller_set_name(GTK_EVENT_CONTROLLER(gesture.get()), "vte-click-gesture");
+        gtk_widget_add_controller(m_widget, GTK_EVENT_CONTROLLER(gesture.release()));
+
+        gesture = vte::glib::take_ref(gtk_gesture_long_press_new());
+        gtk_gesture_single_set_touch_only(GTK_GESTURE_SINGLE(gesture.get()), true);
+
+        g_signal_connect(gesture.get(), "pressed",
+                         G_CALLBACK(long_press_pressed_cb), this);
+        g_signal_connect(gesture.get(), "cancelled",
+                         G_CALLBACK(long_press_cancelled_cb), this);
+        gtk_event_controller_set_name(GTK_EVENT_CONTROLLER(gesture.get()), "vte-long-press-gesture");
         gtk_widget_add_controller(m_widget, GTK_EVENT_CONTROLLER(gesture.release()));
 
 #endif /* VTE_GTK == 4 */
@@ -702,9 +889,15 @@ Widget::constructed() noexcept
 void
 Widget::css_changed(GtkCssStyleChange* change)
 {
-        /* This function is mostly useless, since there's no public API for GtkCssStyleChange */
+        /* This function is inefficient, since there's no public API
+         * for GtkCssStyleChange to see what exactly changed, and if
+         * we do need to queue the resize for it or not.
+         */
 
-        padding_changed();
+        auto need_resize = padding_changed();
+
+        if (need_resize)
+                gtk_widget_queue_resize(gtk());
 }
 
 #endif /* VTE_GTK == 4 */
@@ -718,9 +911,14 @@ Widget::direction_changed(GtkTextDirection old_direction) noexcept
 void
 Widget::dispose() noexcept
 {
-#ifdef WITH_A11Y
+#if WITH_A11Y && VTE_GTK == 3
         m_terminal->set_accessible(nullptr);
 #endif
+
+        // Dismiss a showing context menu
+        if (m_menu_showing) {
+                unset_context_menu(m_menu_showing.get(), true, false);
+        }
 
         if (m_terminal->terminate_child()) {
                 int status = W_EXITCODE(0, SIGKILL);
@@ -763,6 +961,11 @@ Widget::event_focus_in(GdkEventFocus *event)
 {
 	_vte_debug_print(VTE_DEBUG_EVENTS, "Focus In");
 
+#if VTE_GTK == 4
+        if (!root_focused())
+                return;
+#endif
+
         m_terminal->widget_focus_in();
 }
 
@@ -770,6 +973,11 @@ void
 Widget::event_focus_out(GdkEventFocus *event)
 {
 	_vte_debug_print(VTE_DEBUG_EVENTS, "Focus Out");
+
+#if VTE_GTK == 4
+        if (!root_focused())
+                return;
+#endif
 
         m_terminal->widget_focus_out();
 }
@@ -840,15 +1048,18 @@ Widget::event_leave(GdkEventCrossing *event)
 
         m_terminal->widget_mouse_leave(mouse_event);
 }
+
 bool
 Widget::event_scroll(GdkEventScroll *event)
 {
-        auto scroll_event = scroll_event_from_gdk(reinterpret_cast<GdkEvent*>(event));
+        if (auto const scroll_event = scroll_event_from_gdk(reinterpret_cast<GdkEvent*>(event))) {
+                _vte_debug_print(VTE_DEBUG_EVENTS, "Scroll delta_x=%.3f delta_y=%.3f\n",
+                                 scroll_event->dx(), scroll_event->dy());
 
-	_vte_debug_print(VTE_DEBUG_EVENTS, "Scroll delta_x=%.3f delta_y=%.3f\n",
-                         scroll_event.dx(), scroll_event.dy());
+                return m_terminal->widget_mouse_scroll(*scroll_event);
+        }
 
-        return m_terminal->widget_mouse_scroll(scroll_event);
+        return false;
 }
 
 bool
@@ -908,6 +1119,26 @@ Widget::event_key_modifiers(GtkEventControllerKey* controller,
 }
 
 void
+Widget::gesture_long_press_pressed(GtkGestureLongPress* gesture,
+                                   double x,
+                                   double y)
+{
+	_vte_debug_print(VTE_DEBUG_EVENTS, "Long Press gesture pressed x=%.3f y=%.3f\n", x, y);
+
+        // FIXMEgtk4: could let Terminal have the event first
+
+        if (show_context_menu(EventContext{x, y, true})) {
+                gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+        }
+}
+
+void
+Widget::gesture_long_press_cancelled(GtkGestureLongPress* gesture)
+{
+	_vte_debug_print(VTE_DEBUG_EVENTS, "Long Press gesture cancelled");
+}
+
+void
 Widget::event_focus_enter(GtkEventControllerFocus* controller)
 {
 	_vte_debug_print(VTE_DEBUG_EVENTS, "Focus In");
@@ -937,7 +1168,8 @@ Widget::event_motion_enter(GtkEventControllerMotion* controller,
                 return;
 #endif
 
-        terminal()->widget_mouse_enter({EventBase::Type::eMOUSE_MOTION,
+        terminal()->widget_mouse_enter({nullptr, // event
+                                        EventBase::Type::eMOUSE_MOTION,
                                         1, // press count,
                                         0, // gdk_event_get_modifier_state(event),
                                         MouseEvent::Button::eNONE,
@@ -958,7 +1190,8 @@ Widget::event_motion_leave(GtkEventControllerMotion* controller)
 
         // FIXMEgtk4 how to get the coordinates here? GtkEventControllerMotion::update_pointer_focus
         // has them, but the signal doesn't carry them. File a gtk bug?
-        terminal()->widget_mouse_leave({EventBase::Type::eMOUSE_MOTION,
+        terminal()->widget_mouse_leave({nullptr, // event
+                                        EventBase::Type::eMOUSE_MOTION,
                                         1, // press count,
                                         0, // gdk_event_get_modifier_state(event),
                                         MouseEvent::Button::eNONE,
@@ -977,7 +1210,8 @@ Widget::event_motion(GtkEventControllerMotion* controller,
                 return;
 
         // FIXMEgtk4 could this also be a touch event??
-        terminal()->widget_mouse_motion({EventBase::Type::eMOUSE_MOTION,
+        terminal()->widget_mouse_motion({nullptr, // event
+                                         EventBase::Type::eMOUSE_MOTION,
                                          1, // press count
                                          gdk_event_get_modifier_state(event),
                                          MouseEvent::Button::eNONE,
@@ -1060,8 +1294,7 @@ Widget::gesture_click_pressed(GtkGestureClick* gesture,
                                                           x, y);
         if (terminal()->widget_mouse_press(event))
                 gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
-        else
-                gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_DENIED);
+	// Note that we don't deny the sequence here in the |else| case, see issue #2630
 
         // FIXMEgtk4 GtkLabel does
         //        if (press_count >= 3)
@@ -1192,10 +1425,10 @@ Widget::read_modifiers_from_gdk(GdkEvent* event) const noexcept
 unsigned
 Widget::key_event_translate_ctrlkey(KeyEvent const& event) const noexcept
 {
-#if VTE_GTK == 3
 	if (event.keyval() < 128)
 		return event.keyval();
 
+#if VTE_GTK == 3
         auto display = gdk_window_get_display(gdk_event_get_window(event.platform_event()));
         auto keymap = gdk_keymap_get_for_display(display);
         auto keyval = unsigned{event.keyval()};
@@ -1217,10 +1450,35 @@ Widget::key_event_translate_ctrlkey(KeyEvent const& event) const noexcept
 	}
 
         return keyval;
+
 #elif VTE_GTK == 4
-        // FIXMEgtk4: find a way to do this on gtk4
+        auto const display = gdk_event_get_display(event.platform_event());
+
+        /* Try groups in order to find one mapping the key to ASCII */
+        for (auto i = unsigned{0}; i < 4; i++) {
+                auto keyval = guint{};
+                auto consumed_modifiers = GdkModifierType{};
+                if (!gdk_display_translate_key(display,
+                                               event.keycode(),
+                                               GdkModifierType(event.modifiers()),
+                                               i,
+                                               &keyval,
+                                               nullptr,
+                                               nullptr,
+                                               &consumed_modifiers))
+                        continue;
+
+                if (keyval >= 128)
+                        continue;
+
+                _vte_debug_print (VTE_DEBUG_EVENTS,
+                                  "ctrl+Key, group=%d de-grouped into keyval=0x%x\n",
+                                  event.group(), keyval);
+                return keyval;
+        }
+
         return event.keyval();
-#endif
+#endif /* VTE_GTK */
 }
 
 KeyEvent
@@ -1303,7 +1561,8 @@ Widget::mouse_event_from_gdk(GdkEvent* event) const /* throws */
         auto button = 0u;
         (void)gdk_event_get_button(event, &button);
 
-        return {type,
+        return {event,
+                type,
                 press_count,
                 read_modifiers_from_gdk(event),
                 MouseEvent::Button(button),
@@ -1427,18 +1686,48 @@ Widget::notify_scroll_value_changed()
         }
 
         auto const v = gtk_adjustment_get_value(m_vadjustment.get());
-        if (!_vte_double_equal(v, value)) {
-                m_changing_scroll_position = true;
-                gtk_adjustment_set_value(m_vadjustment.get(), value);
-                m_changing_scroll_position = false;
+        if (_vte_double_equal(v, value))
+                return;
+
+#if VTE_GTK == 4
+        auto kinetic = false;
+        GtkWidget* sw = nullptr;
+        if (m_inside_scrolled_window) {
+                // If a kinetic scroll is in progress in the containing
+                // GtkScrolledWindow, it will continue even when we set
+                // the new value.  GtkScrolledWindow lacks direct API to
+                // stop kinetic scrolling, but it does stop when changing
+                // the kinetic-scrolling property to false. So we unset
+                // and then re-set kinetic-scrolling.
+
+                sw = gtk_widget_get_ancestor(gtk(), GTK_TYPE_SCROLLED_WINDOW);
+                kinetic = gtk_scrolled_window_get_kinetic_scrolling(GTK_SCROLLED_WINDOW(sw));
+                if (kinetic)
+                        gtk_scrolled_window_set_kinetic_scrolling(GTK_SCROLLED_WINDOW(sw), false);
         }
+#endif // VTE_GTK == 4
+
+        m_changing_scroll_position = true;
+        gtk_adjustment_set_value(m_vadjustment.get(), value);
+        m_changing_scroll_position = false;
+
+#if VTE_GTK == 4
+        if (kinetic)
+                gtk_scrolled_window_set_kinetic_scrolling(GTK_SCROLLED_WINDOW(sw), true);
+#endif // VTE_GTK == 4
 }
 
 #if VTE_GTK == 3
 
-ScrollEvent
-Widget::scroll_event_from_gdk(GdkEvent* event) const /* throws */
+std::optional<ScrollEvent>
+Widget::scroll_event_from_gdk(GdkEvent* event) const
 {
+        /* Ignore emulated scroll events, see
+         * https://gitlab.gnome.org/GNOME/vte/-/issues/2561
+         */
+        if (gdk_event_get_pointer_emulated(event))
+                return std::nullopt;
+
         auto dx = double{}, dy = double{};
         if (!gdk_event_get_scroll_deltas(event, &dx, &dy)) {
                 auto dir = GdkScrollDirection{};
@@ -1450,13 +1739,13 @@ Widget::scroll_event_from_gdk(GdkEvent* event) const /* throws */
                 case GDK_SCROLL_DOWN:   dx =  0.; dy =  1.; break;
                 case GDK_SCROLL_LEFT:   dx = -1.; dy =  0.; break;
                 case GDK_SCROLL_RIGHT:  dx =  1.; dy =  0.; break;
-                case GDK_SCROLL_SMOOTH: break;
+                case GDK_SCROLL_SMOOTH:
                 default: __builtin_unreachable();
                 }
         }
 
-        return {read_modifiers_from_gdk(event),
-                dx, dy};
+
+        return ScrollEvent{read_modifiers_from_gdk(event), dx, dy};
 }
 
 #endif /* VTE_GTK == 3 */
@@ -1478,7 +1767,8 @@ Widget::mouse_event_from_gesture_click(EventBase::Type type,
         if (!event)
                 throw std::runtime_error{"No last event!?"};
 
-        return {type,
+        return {event,
+                type,
                 press_count,
                 gdk_event_get_modifier_state(event),
                 MouseEvent::Button(button),
@@ -1505,7 +1795,7 @@ Widget::measure(GtkOrientation orientation,
                 int* minimum,
                 int* natural,
                 int* minimum_baseline,
-                int* natural_baseline)
+                int* natural_baseline) noexcept
 {
         _vte_debug_print(VTE_DEBUG_WIDGET_SIZE, "Widget measure for_size=%d orientation=%s\n",
                          for_size,
@@ -1516,7 +1806,7 @@ Widget::measure(GtkOrientation orientation,
                 terminal()->widget_measure_width(minimum, natural);
                 break;
         case GTK_ORIENTATION_VERTICAL:
-                *minimum_baseline = *natural_baseline = 0;
+                *minimum_baseline = *natural_baseline = -1;
                 terminal()->widget_measure_height(minimum, natural);
                 break;
         }
@@ -1524,19 +1814,22 @@ Widget::measure(GtkOrientation orientation,
 
 #endif /* VTE_GTK == 4 */
 
-void
-Widget::padding_changed()
+bool
+Widget::padding_changed() noexcept
 {
-#if VTE_GTK == 3
         auto padding = GtkBorder{};
-        auto context = gtk_widget_get_style_context(gtk());
+        auto const context = gtk_widget_get_style_context(gtk());
         gtk_style_context_get_padding(context,
 #if VTE_GTK == 3
                                       gtk_style_context_get_state(context),
 #endif
                                       &padding);
-        terminal()->set_border_padding(&padding);
-#endif /* VTE_GTK FIXMEgtk4 how to handle margin/padding? */
+
+        /* FIXMEchpe: do we need to add the border from
+         * gtk_style_context_get_border() to the padding?
+         */
+
+        return terminal()->set_style_border(padding);
 }
 
 bool
@@ -1647,8 +1940,78 @@ Widget::realize() noexcept
 #if VTE_GTK == 4
 
 void
+Widget::root_surface_state_notify()
+{
+        auto const r = gtk_widget_get_root(gtk());
+        auto const toplevel = GDK_TOPLEVEL(gtk_native_get_surface(GTK_NATIVE(r)));
+        auto const new_state = toplevel ? gdk_toplevel_get_state(toplevel) : GdkToplevelState(0);
+        auto const changed_mask = new_state ^ m_root_surface_state;
+
+        m_root_surface_state = new_state;
+
+        // If the widget is the focus widget in the toplevel, notify
+        // the widget that it now has gained/lost the global focus
+        if ((changed_mask & GDK_TOPLEVEL_STATE_FOCUSED) &&
+            gtk_root_get_focus(r) == gtk()) {
+
+                if (root_focused())
+                        terminal()->widget_focus_in();
+                else
+                        terminal()->widget_focus_out();
+        }
+}
+
+void
+Widget::root_realize()
+{
+        if (m_root_surface_state_notify_id != 0)
+                return;
+
+        auto const r = gtk_widget_get_root(gtk());
+        auto const toplevel = GDK_TOPLEVEL(gtk_native_get_surface(GTK_NATIVE(r)));
+        m_root_surface_state_notify_id = g_signal_connect(toplevel,
+                                                          "notify::state",
+                                                          G_CALLBACK(root_surface_state_notify_cb),
+                                                          this);
+
+        root_surface_state_notify();
+}
+
+void
+Widget::root_unrealize()
+{
+        root_surface_state_notify();
+        m_root_surface_state = GdkToplevelState(0);
+
+        if (m_root_surface_state_notify_id == 0)
+                return;
+
+        auto const r = gtk_widget_get_root(gtk());
+        auto const toplevel = GDK_TOPLEVEL(gtk_native_get_surface(GTK_NATIVE(r)));
+        g_signal_handler_disconnect(toplevel, m_root_surface_state_notify_id);
+        m_root_surface_state_notify_id = 0;
+}
+
+void
 Widget::root()
 {
+        auto const r = gtk_widget_get_root(gtk());
+        m_root_realize_id = g_signal_connect(r,
+                                             "realize",
+                                             G_CALLBACK(root_realize_cb),
+                                             this);
+        m_root_unrealize_id = g_signal_connect(r,
+                                               "unrealize",
+                                               G_CALLBACK(root_unrealize_cb),
+                                               this);
+
+        // Find out if we're inside a GtkScrolledWindow
+        auto const sw = gtk_widget_get_ancestor(gtk(), GTK_TYPE_SCROLLED_WINDOW);
+        m_inside_scrolled_window = bool(sw);
+
+        // Already realised?
+        if (gtk_widget_get_realized(GTK_WIDGET(r)))
+                root_realize();
 }
 
 #endif /* VTE_GTK == 4 */
@@ -1708,15 +2071,15 @@ void
 Widget::settings_changed()
 {
         auto blink = gboolean{};
-        auto blink_time = int{};
-        auto blink_timeout = int{};
+        auto blink_time_ms = int{};
+        auto blink_timeout_s = int{};
 #if VTE_GTK == 4
         auto aspect = double{};
 #endif
         g_object_get(m_settings.get(),
                      "gtk-cursor-blink", &blink,
-                     "gtk-cursor-blink-time", &blink_time,
-                     "gtk-cursor-blink-timeout", &blink_timeout,
+                     "gtk-cursor-blink-time", &blink_time_ms,
+                     "gtk-cursor-blink-timeout", &blink_timeout_s,
 #if VTE_GTK == 4
                      "gtk-cursor-aspect-ratio", &aspect,
 #endif
@@ -1724,9 +2087,9 @@ Widget::settings_changed()
 
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Cursor blinking settings: blink=%d time=%d timeout=%d\n",
-                         blink, blink_time, blink_timeout);
+                         blink, blink_time_ms, blink_timeout_s * 1000);
 
-        m_terminal->set_blink_settings(blink, blink_time, blink_timeout);
+        m_terminal->set_blink_settings(blink, blink_time_ms, blink_timeout_s * 1000);
 
 #if VTE_GTK == 4
         m_terminal->set_cursor_aspect(aspect);
@@ -1857,8 +2220,9 @@ Widget::size_allocate(GtkAllocation* allocation)
         m_terminal->widget_size_allocate(allocation->x, allocation->y,
                                          allocation->width, allocation->height,
                                          -1,
-                                         vte::terminal::Terminal::Alignment::START,
-                                         vte::terminal::Terminal::Alignment::START_FILL);
+                                         vte::terminal::Terminal::Alignment(m_xalign),
+                                         vte::terminal::Terminal::Alignment(m_yalign),
+                                         m_xfill, m_yfill);
 
         gtk_widget_set_allocation(gtk(), allocation);
 
@@ -1882,9 +2246,12 @@ Widget::size_allocate(int width,
 
         terminal()->widget_size_allocate(width, height, baseline,
                                          vte::terminal::Terminal::Alignment(m_xalign),
-                                         vte::terminal::Terminal::Alignment(m_yalign));
+                                         vte::terminal::Terminal::Alignment(m_yalign),
+                                         m_xfill, m_yfill);
 
-        gtk_widget_allocate(gtk(), width, height, baseline, nullptr);
+        // Need to size allocate the popup too
+        if (m_menu_showing)
+                gtk_popover_present(GTK_POPOVER(m_menu_showing.get()));
 }
 
 #endif /* VTE_GTK */
@@ -1904,22 +2271,6 @@ Widget::state_flags_changed(GtkStateFlags old_flags)
         _vte_debug_print(VTE_DEBUG_STYLE, "Widget state flags changed\n");
 }
 
-#if VTE_GTK == 4
-
-void
-Widget::snapshot(GtkSnapshot* snapshot_object)
-{
-        _vte_debug_print(VTE_DEBUG_DRAW, "Widget snapshot\n");
-
-        auto rect = terminal()->allocated_rect();
-        auto region = vte::take_freeable(cairo_region_create_rectangle(rect));
-        auto grect = vte::graphene::make_rect(rect);
-        auto cr = vte::take_freeable(gtk_snapshot_append_cairo(snapshot_object, &grect));
-        terminal()->draw(cr.get(), region.get());
-}
-
-#endif /* VTE_GTK == 4 */
-
 #if VTE_GTK == 3
 
 void
@@ -1927,13 +2278,17 @@ Widget::style_updated() noexcept
 {
         _vte_debug_print(VTE_DEBUG_STYLE, "Widget style changed\n");
 
-        padding_changed();
+        auto need_resize = padding_changed();
 
         auto aspect = float{};
         gtk_widget_style_get(gtk(), "cursor-aspect-ratio", &aspect, nullptr);
         m_terminal->set_cursor_aspect(aspect);
 
         m_terminal->widget_style_updated();
+
+        if (need_resize)
+                gtk_widget_queue_resize(m_widget);
+
 }
 
 #endif /* VTE_GTK == 3 */
@@ -2029,6 +2384,50 @@ Widget::unrealize() noexcept
 void
 Widget::unroot()
 {
+        root_unrealize();
+
+        auto const r = gtk_widget_get_root(gtk());
+        g_signal_handler_disconnect(r, m_root_realize_id);
+        m_root_realize_id = 0;
+        g_signal_handler_disconnect(r, m_root_unrealize_id);
+        m_root_unrealize_id = 0;
+
+#if VTE_GTK == 4
+        m_inside_scrolled_window = false;
+#endif
+}
+
+void
+Widget::context_menu_closed(GtkWidget* widget)
+{
+        if (!widget || m_menu_showing.get() != widget)
+                return;
+
+        // There is a design flaw in the gtk popover handling here
+        // in that we cannot directly unset the context menu now,
+        // because the selected action is resolved *after* this
+        // function has run, and unsetting the parent will make
+        // resolving the action fail.
+        // So instead, we need to delay this to idle.
+        // See https://gitlab.gnome.org/GNOME/vte/-/issues/2716
+
+        if (m_context_menu_unset_on_idle_source != 0)
+                return; // already scheduled
+
+        m_context_menu_unset_on_idle_source =
+                g_idle_add_once(GSourceOnceFunc(context_menu_unset_on_idle_cb),
+                                this);
+}
+
+void
+Widget::unset_context_menu_on_idle()
+{
+        m_context_menu_unset_on_idle_source = 0;
+
+        // We can assume that the menu-to-unset is m_menu_showing,
+        // since otherwise unset_context_menu() would have been called
+        // directly, and that cancels the idle.
+        unset_context_menu(m_menu_showing.get(), false, true);
 }
 
 #endif /* VTE_GTK == 4 */
@@ -2053,6 +2452,139 @@ Widget::vadjustment_value_changed()
         adj += lower;
 
         m_terminal->set_scroll_value(adj);
+}
+
+bool
+Widget::set_context_menu(vte::glib::RefPtr<GtkWidget> menu)
+{
+        if (menu == m_context_menu)
+                return false;
+
+        if (m_context_menu) {
+                g_signal_handlers_disconnect_matched(menu.get(),
+                                                     G_SIGNAL_MATCH_DATA,
+                                                     0, 0,
+                                                     nullptr,
+                                                     nullptr,
+                                                     this);
+        }
+
+        m_context_menu = std::move(menu);
+        return true;
+}
+
+void
+Widget::emit_setup_context_menu(EventContext const* context)
+{
+        _vte_debug_print(VTE_DEBUG_EVENTS, "Emitting setup-context-menu\n");
+        g_signal_emit(object(), signals[SIGNAL_SETUP_CONTEXT_MENU], 0,
+                      reinterpret_cast<VteEventContext const*>(context));
+}
+
+bool
+Widget::show_context_menu(EventContext const& context)
+{
+        unset_context_menu(m_menu_showing.get(), true, false);
+
+        // Let the embedder update or provide the menu model or menu
+        emit_setup_context_menu(&context);
+
+        // Create or get the menu
+#if VTE_GTK == 3
+        if (m_context_menu_model)
+                m_menu_showing = vte::glib::make_ref_sink
+                        (GTK_WIDGET(gtk_menu_new_from_model(m_context_menu_model.get())));
+#elif VTE_GTK == 4
+        if (m_context_menu_model)
+                m_menu_showing = vte::glib::make_ref_sink
+                        (GTK_WIDGET(gtk_popover_menu_new_from_model(G_MENU_MODEL(m_context_menu_model.get()))));
+#endif // VTE_GTK
+        else if (m_context_menu) {
+                m_menu_showing = vte::glib::ref(m_context_menu);
+        }
+
+        _vte_debug_print(VTE_DEBUG_EVENTS, "Context menu is %p\n", (void*)m_menu_showing.get());
+
+        if (!m_menu_showing)
+                return false;
+
+        gtk_style_context_add_class(gtk_widget_get_style_context(m_menu_showing.get()),
+                                    "context-menu");
+
+        auto const button = context.button();
+
+#if VTE_GTK == 3
+
+        g_object_set(G_OBJECT(m_menu_showing.get()),
+                     "anchor-hints", GdkAnchorHints(GDK_ANCHOR_FLIP_Y),
+                     "menu-type-hint", GdkWindowTypeHint(GDK_WINDOW_TYPE_HINT_POPUP_MENU),
+                     nullptr);
+
+        gtk_menu_attach_to_widget(GTK_MENU(m_menu_showing.get()), gtk(),
+                                  GtkMenuDetachFunc(context_menu_detach_cb));
+
+        g_signal_connect(m_menu_showing.get(), "selection-done",
+                         G_CALLBACK(context_menu_selection_done_cb), this);
+
+        if (button == -1) { // Keyboard
+
+                auto const rect = terminal()->cursor_rect();
+                gtk_menu_popup_at_rect(GTK_MENU(m_menu_showing.get()),
+                                       event_window(),
+                                       rect.cairo(),
+                                       GDK_GRAVITY_SOUTH_WEST,
+                                       GDK_GRAVITY_NORTH_WEST,
+                                       context.platform_event());
+
+                // Select first menu item
+                gtk_menu_shell_select_first(GTK_MENU_SHELL(m_menu_showing.get()), true);
+
+        } else { // Mouse
+                gtk_menu_popup_at_pointer(GTK_MENU(m_menu_showing.get()),
+                                          context.platform_event());
+        }
+
+#elif VTE_GTK == 4
+
+        gtk_widget_set_parent(m_menu_showing.get(), gtk());
+
+        auto const is_touch = context.is_long_press();
+
+        if (is_touch)
+                gtk_widget_set_halign(m_menu_showing.get(), GTK_ALIGN_FILL);
+        else if (gtk_widget_get_direction(gtk()) == GTK_TEXT_DIR_RTL)
+                gtk_widget_set_halign(m_menu_showing.get(), GTK_ALIGN_END);
+        else
+                gtk_widget_set_halign(m_menu_showing.get(), GTK_ALIGN_START);
+
+        auto const popover = GTK_POPOVER(m_menu_showing.get());
+        gtk_popover_set_autohide(popover, true);
+        gtk_popover_set_cascade_popdown(popover, true);
+        gtk_popover_set_has_arrow(popover, is_touch);
+        gtk_popover_set_mnemonics_visible(popover, false);
+        gtk_popover_set_position(popover, is_touch ? GTK_POS_TOP : GTK_POS_BOTTOM);
+
+        if (button == -1) {
+                // Keyboard, point to the cursor rectangle
+                auto const rect = terminal()->cursor_rect().cairo();
+                gtk_popover_set_pointing_to(popover, &rect);
+
+                // Gtk apparently automatically selects the first sensitive
+                // menu item in the popover.
+        } else if (double x, y;
+                   context.get_coords(&x, &y)) {
+                auto rect = GdkRectangle{int(x), int(y), 0, 0};
+                gtk_popover_set_pointing_to(popover, &rect);
+        }
+
+        g_signal_connect(m_menu_showing.get(), "closed",
+                         G_CALLBACK(context_menu_closed_cb),
+                         this);
+
+        gtk_popover_popup(popover);
+#endif // VTE_GTK
+
+        return true;
 }
 
 } // namespace platform

@@ -21,13 +21,21 @@
 
 #include <csignal>
 #include <fcntl.h>
+#include <unistd.h>
 
 #ifdef __linux__
+
+#include <sys/ioctl.h>
 #include <sys/syscall.h>
+
+#if __has_include(<linux/close_range.h>)
+#include <linux/close_range.h>
+#endif
 
 #if defined(__mips__) || defined(__mips64__)
 #include <asm/sgidefs.h>
 #endif
+
 #endif
 
 /* NSIG isn't in POSIX, so if it doesn't exist use this here. See bug #759196 */
@@ -35,14 +43,20 @@
 #define NSIG (8 * sizeof(sigset_t))
 #endif
 
-#ifndef HAVE_FDWALK
+#if !HAVE_FDWALK
 int fdwalk(int (*cb)(void* data, int fd),
            void* data);
 #endif
 
-#ifndef HAVE_STRCHRNUL
+#if !HAVE_STRCHRNUL
 char* strchrnul(char const* s,
                 int c);
+#endif
+
+#if !HAVE_CLOSE_RANGE
+int close_range(unsigned int first,
+                unsigned int last,
+                unsigned int flags);
 #endif
 
 #ifdef __linux__
@@ -127,5 +141,14 @@ char* strchrnul(char const* s,
 #ifndef CLOSE_RANGE_CLOEXEC
 #define CLOSE_RANGE_CLOEXEC (1u << 2)
 #endif
+
+#if !defined(TIOCGPTPEER)
+/* See linux commit 54ebbfb1603415d9953c150535850d30609ef077 */
+#if defined(__sparc__)
+#define TIOCGPTPEER _IOR('t', 137, int)
+#else
+#define TIOCGPTPEER _IOR('T', 0x41, int)
+#endif
+#endif /* !TIOCGPTPEER */
 
 #endif /* __linux__ */

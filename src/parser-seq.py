@@ -86,6 +86,7 @@ class Source(enum.Enum):
     ECMA48 = enum.auto() # eq ISO 6429
     HP     = enum.auto()
     ITERM2 = enum.auto()
+    MINTTY = enum.auto()
     RLOGIN = enum.auto()
     SCO    = enum.auto()
     VTE    = enum.auto()
@@ -103,6 +104,8 @@ class Source(enum.Enum):
              return cls.HP
         elif name.startswith('ITERM'):
             return cls.ITERM2
+        elif name.startswith('MINTTY'):
+            return cls.MINTTY
         elif name.startswith('RLOGIN'):
             return cls.RLOGIN
         elif name.startswith('SCO'):
@@ -392,7 +395,7 @@ sequences = [
                comment='double width double height line: bottom half'),
     seq_ESCAPE('DECSWL', '5', intermediates=(Intermediate.HASH,), flags=Flags.NOP,
                comment='single width single height line'),
-    seq_ESCAPE('DECBI', '6', flags=Flags.NOP,
+    seq_ESCAPE('DECBI', '6',
                comment='back index'),
     seq_ESCAPE('DECDWL', '6', intermediates=(Intermediate.HASH,), flags=Flags.NOP,
                comment='double width single height line'),
@@ -402,7 +405,7 @@ sequences = [
                comment='restore cursor'),
     seq_ESCAPE('DECALN', '8', intermediates=(Intermediate.HASH,),
                comment='screen alignment pattern'),
-    seq_ESCAPE('DECFI', '9', flags=Flags.NOP,
+    seq_ESCAPE('DECFI', '9',
                comment='forward index'),
     seq_ESCAPE('WYDHL_TH', ':', intermediates=(Intermediate.HASH,), flags=Flags.NOP,
                comment='single width double height line: top half'),
@@ -486,11 +489,11 @@ sequences = [
     # CSI sequences
     seq_CSI('ICH', '@',
             comment='insert character'),
-    seq_CSI('SL', '@', intermediates=(Intermediate.SPACE,), flags=Flags.NOP,
+    seq_CSI('SL', '@', intermediates=(Intermediate.SPACE,),
             comment='scroll left'),
     seq_CSI('CUU', 'A',
             comment='cursor up'),
-    seq_CSI('SR', 'A', intermediates=(Intermediate.SPACE,), flags=Flags.NOP,
+    seq_CSI('SR', 'A', intermediates=(Intermediate.SPACE,),
             comment='scroll right'),
     seq_CSI('CUD', 'B',
             comment='cursor down'),
@@ -743,6 +746,8 @@ sequences = [
             comment='xterm pop SGR stack'),
     seq_CSI('DECSDDT', 'q', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
             comment='select disconnect delay time'),
+    seq_CSI('MINTTY_PROGRESS', 'q', intermediates=(Intermediate.PERCENT,), flags=Flags.NOP,
+            comment='set progress report'),
     seq_CSI('DECSR', 'q', intermediates=(Intermediate.MULT,),
             comment='secure reset'),
     seq_CSI('DECELF', 'q', intermediates=(Intermediate.PLUS,), flags=Flags.NOP,
@@ -885,7 +890,7 @@ sequences = [
             comment='xterm pop SGR stack'),
     seq_CSI('DECSASD', '}', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
             comment='select active status display'),
-    seq_CSI('DECIC', '}', intermediates=(Intermediate.SQUOTE,), flags=Flags.NOP,
+    seq_CSI('DECIC', '}', intermediates=(Intermediate.SQUOTE,),
             comment='insert column'),
     seq_CSI('DECATC', '}', intermediates=(Intermediate.COMMA,), flags=Flags.NOP,
             comment='alternate text color'),
@@ -895,7 +900,7 @@ sequences = [
             comment='terminal mode emulation'),
     seq_CSI('DECSSDT', '~', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
             comment='select status display line type'),
-    seq_CSI('DECDC', '~', intermediates=(Intermediate.SQUOTE,), flags=Flags.NOP,
+    seq_CSI('DECDC', '~', intermediates=(Intermediate.SQUOTE,),
             comment='delete column'),
     seq_CSI('DECPS', '~', intermediates=(Intermediate.COMMA,), flags=Flags.NOP,
             comment='play sound'),
@@ -911,7 +916,7 @@ sequences = [
             comment='restore terminal state'),
     seq_DCS('XTERM_STCAP', 'p', intermediates=(Intermediate.PLUS,), flags=Flags.NOP,
             comment='xterm set termcap/terminfo'),
-    seq_DCS('DECSIXEL', 'q', flags=Flags.NOP,
+    seq_DCS('DECSIXEL', 'q', flags=Flags.UNRIPE | Flags.HANDLER_RV,
             comment='SIXEL graphics'),
     seq_DCS('DECRQSS', 'q', intermediates=(Intermediate.CASH,),
             comment='request selection or setting'),

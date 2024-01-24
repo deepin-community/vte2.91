@@ -86,12 +86,20 @@ Regex*
 Regex::compile(Regex::Purpose purpose,
                std::string_view const& pattern,
                uint32_t flags,
+               uint32_t extra_flags,
+               size_t* error_offset,
                GError** error)
 {
         assert(error == nullptr || *error == nullptr);
 
         if (!check_pcre_config_unicode(error))
                 return nullptr;
+
+        auto context = vte::Freeable<pcre2_compile_context_8>{};
+        if (extra_flags) {
+                context = vte::take_freeable(pcre2_compile_context_create_8(nullptr));
+                pcre2_set_compile_extra_options_8(context.get(), extra_flags);
+        }
 
         int errcode;
         PCRE2_SIZE erroffset;
@@ -103,10 +111,13 @@ Regex::compile(Regex::Purpose purpose,
                                                        PCRE2_NEVER_BACKSLASH_C |
                                                        PCRE2_USE_OFFSET_LIMIT,
                                                        &errcode, &erroffset,
-                                                       nullptr));
+                                                       context.get()));
 
         if (!code) {
                 set_gerror_from_pcre_error(errcode, error);
+                if (error_offset)
+                        *error_offset = erroffset;
+
                 g_prefix_error(error, "Failed to compile pattern to regex at offset %" G_GSIZE_FORMAT ":",
                                erroffset);
                 return nullptr;

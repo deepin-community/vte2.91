@@ -1,4 +1,3479 @@
-commit 6a0a9fed4d54122df31c13d601b1509597a36f2b (HEAD -> vte-0-66, tag: 0.66.2)
+commit de5df02c42eb5de98f92f5cb4520fc963a54ab51 (HEAD -> master, tag: 0.75.0)
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Dec 31 14:25:16 2023 +0100
+
+    regex: Add out param for error location to the _full() APIs
+
+ src/regex.cc       |  4 ++++
+ src/regex.hh       |  1 +
+ src/vte/vteregex.h |  2 ++
+ src/vteregex.cc    | 27 ++++++++++++++++++++-------
+ 4 files changed, 27 insertions(+), 7 deletions(-)
+
+commit 4530d385191562d84f60066e168631fc1f45f3cc
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sat Dec 2 17:28:16 2023 +0100
+
+    widget: Don't update the ringview before scrolling in history
+    
+    ... or synthesizing "alternate screen scroll" keypresses, it's just not
+    needed in these cases.
+    
+    Improves https://gitlab.gnome.org/GNOME/vte/-/issues/2705
+
+ src/vte.cc | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+commit 9a42ae3d5ddc57c5807c823aa131e071924d0736
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Dec 28 23:06:32 2023 +0100
+
+    regex: Add API to set extra PCRE2 compile flags
+
+ src/pcre2-glue.hh  |   1 +
+ src/regex.cc       |   9 ++++-
+ src/regex.hh       |   1 +
+ src/vte/vteregex.h |  14 ++++++++
+ src/vteregex.cc    | 104 +++++++++++++++++++++++++++++++++++++++++++++--------
+ 5 files changed, 114 insertions(+), 15 deletions(-)
+
+commit 1860b4876f4943fcf2d7e67537c5b0cc6f974b2b
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sun Dec 24 21:48:13 2023 +0100
+
+    widget: Scroll to the bottom on preedit
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2682
+
+ src/vte.cc | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+commit 4f54a76a647144a71ba5712934b5e0d812311482
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Dec 24 11:26:09 2023 +0100
+
+    widget: Deprecate old get-text APIs
+    
+    Deprecate the old vte_terminal_get_text*() APIs that take a
+    VteSelelectionFunc, and deprecate that as well.
+
+ src/vte/vtedeprecated.h | 21 +++++++++++++++++++++
+ src/vte/vteterminal.h   | 25 -------------------------
+ src/vtegtk.cc           | 10 ++++++++--
+ 3 files changed, 29 insertions(+), 27 deletions(-)
+
+commit 1ce1b836c0c002e0f841fc6cc3ea27337de8b319
+Author: Aleksandr Mezin <mezin.alexander@gmail.com>
+Date:   Sun Dec 24 11:26:09 2023 +0100
+
+    widget: Add bindable replacement API to get the displayed text
+    
+    vte_terminal_get_text() isn't bindable in some languages because they
+    cannot pass the now-required nullptr for the attributes GArray. Add
+    a replacement in the style of the other already-existing APIs which
+    take a VteFormat also.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2710
+
+ src/vte/vteterminal.h |  5 +++++
+ src/vtegtk.cc         | 56 +++++++++++++++++++++++++++++++++++++++++----------
+ 2 files changed, 50 insertions(+), 11 deletions(-)
+
+commit a5f11c41aa6c3e521d18cd99e093ebe5915cab71
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Dec 23 22:58:41 2023 +0100
+
+    widget: gtk4: Delay unsetting the context menu to idle
+    
+    The closed signal on the popover comes before the action callback for
+    the chosen action is dispatched, and unsetting the menu makes the
+    action fail to resolve.  Hack around this design flaw by delaying the
+    unsetting to an idle handler.
+    
+    Remove the notify::visible handler since it runs just after the closed
+    signal anyway.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2716
+
+ src/widget.cc | 56 ++++++++++++++++++++++++++++++++++++++++++++------------
+ src/widget.hh |  8 ++++++++
+ 2 files changed, 52 insertions(+), 12 deletions(-)
+
+commit 39aa242388e73bd294b8489ce80428b6485f0bb3
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Dec 22 19:15:09 2023 +0100
+
+    widget: Work around kinetic scrolling when changing the adjustment
+    
+    There is no API to stop a kinetic scroll in GtkScrolledWindow when the
+    adjustment value is changed.  Work around that by disabling kinetic
+    scrolling before changing the value, and re-enabling it afterwards.
+
+ src/widget.cc | 42 +++++++++++++++++++++++++++++++++++++-----
+ src/widget.hh |  1 +
+ 2 files changed, 38 insertions(+), 5 deletions(-)
+
+commit ca746e5ebcd82187185709f33f3b46ea30e9f8c9
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Dec 22 19:15:09 2023 +0100
+
+    app: Add more scrolling options
+
+ src/app/app.cc | 26 +++++++++++++++++++++++---
+ 1 file changed, 23 insertions(+), 3 deletions(-)
+
+commit a1054ae189b5f946b65e1a9a186747bd0e92f6c5
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Dec 22 19:15:09 2023 +0100
+
+    widget: Add scroll-on-insert property
+    
+    Add setting to scroll to the bottom when text is inserted, e.g. by a
+    paste.
+
+ src/app/app.cc        |  1 +
+ src/vte.cc            | 17 ++++++++++++
+ src/vte/vteterminal.h |  6 ++++-
+ src/vtegtk.cc         | 74 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/vtegtk.hh         |  1 +
+ src/vteinternal.hh    |  2 ++
+ 6 files changed, 100 insertions(+), 1 deletion(-)
+
+commit 3a7c705f5f09d6dbd03bcd1abbd2744ab92eafcd
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Dec 14 17:57:04 2023 +0100
+
+    bidi: Use malloced workspace area
+
+ src/bidi.cc | 33 ++++++++++-----------
+ src/bidi.hh | 99 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 114 insertions(+), 18 deletions(-)
+
+commit 413b3ba3558463379d67ad92c264b6f8c556d9c9
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Tue Dec 12 22:49:03 2023 +0100
+
+    widget: Fix initial cursor blink state
+    
+    Fixes https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/8021
+
+ src/vteinternal.hh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 9493d50a4ed8415eaa88bc87d4b2b9c28598ee1f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Dec 12 00:17:59 2023 +0100
+
+    widget: Fix selected text API with block selection mode
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2712
+
+ src/vtegtk.cc | 81 +++++++++++++++++++++++++++++++++++++++++++----------------
+ 1 file changed, 59 insertions(+), 22 deletions(-)
+
+commit 6bda91c6e5c68683410b9ab2bf6f11c81b4c0c03
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Dec 12 00:17:59 2023 +0100
+
+    draw: Remove unused alpha param from drawing methods
+
+ src/drawing-cairo.cc   | 43 +++++++++++++++++++++++++++++++------------
+ src/drawing-cairo.hh   | 11 +++++++----
+ src/drawing-context.cc | 32 +++++++++++++-------------------
+ src/drawing-context.hh | 34 ++++++++++++++++++++++------------
+ src/drawing-gsk.cc     | 35 ++++++++++++++++++++++++++---------
+ src/drawing-gsk.hh     | 11 +++++++----
+ src/vte.cc             | 46 ++++++++++++++++++++++------------------------
+ 7 files changed, 128 insertions(+), 84 deletions(-)
+
+commit e98c1354d14879fc9d45e16815ac0c6d298ea506
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Dec 12 00:17:59 2023 +0100
+
+    widget: Add class vfunc for setup-context-menu signal
+    
+    For consistency with the other signals.
+
+ src/vte/vteterminal.h | 17 ++++++++++-------
+ src/vtegtk.cc         |  3 ++-
+ 2 files changed, 12 insertions(+), 8 deletions(-)
+
+commit a9cbd3948b3ecc75a8d725d5ed788b528b1f6f35
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Mon Nov 6 10:32:45 2023 -0800
+
+    vte: avoid creating rect/region on GTK 4
+    
+    These aren't used when on GTK 4 so just avoid doing that work altogether
+    on GTK 4.
+
+ src/vte.cc | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+commit adde982bad9306610c568414c3111f98e7636fa1
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Fri Dec 1 11:08:51 2023 -0800
+
+    vte: remove extra PTY read from tick callback
+    
+    This extra read was causing IO to be consumed from the GtkWidget tick
+    callback. We don't want that because it creates a priority inversion where
+    high-producing clients can take higher priority over slower producing
+    clients.
+    
+    Fixes #2698
+
+ src/vte.cc | 2 --
+ 1 file changed, 2 deletions(-)
+
+commit 7cd21873572c66b5a9d69178c8e0a0231d307569
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Nov 28 13:56:28 2023 -0800
+
+    vte: emit adjustment changed in tick callback
+    
+    We want this to run every frame that we process new data so that the
+    layout phase of the frame clock will update the scroll position.
+
+ src/vte.cc         | 7 +++----
+ src/vteinternal.hh | 2 +-
+ 2 files changed, 4 insertions(+), 5 deletions(-)
+
+commit c17d9c6b4571be0ab55c3818d9125233553bb7ee
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Thu Nov 30 12:24:29 2023 -0800
+
+    Reapply "vte: drive updates from GdkFrameClock"
+    
+    This reverts commit 727f8c1034176b70871ba2eedca306a15caea191.
+    
+    The scrollback corruption was unrelated and fixed in
+    27bde60e8aef578c3a87f239c7cf70dc8fbed8df.
+
+ src/vte.cc         | 351 ++++++-----------------------------------------------
+ src/vtedefines.hh  |   3 -
+ src/vteinternal.hh |  10 +-
+ 3 files changed, 39 insertions(+), 325 deletions(-)
+
+commit 140c77ec045d062ae53e6966e4a640ac488c9bc1
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Nov 30 18:36:15 2023 +0100
+
+    widget: gtk4: Add long press touch gesture
+    
+    ... and show the context menu when it's triggered.
+    
+    This is necessary to fully port gnome-console to the new context menu
+    APIs.
+
+ src/widget.cc | 66 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ src/widget.hh | 18 ++++++++++++++++
+ 2 files changed, 82 insertions(+), 2 deletions(-)
+
+commit d1f94244bcc8bae7474d875dd12e7bb416017238
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Nov 27 09:32:35 2023 +0100
+
+    lib: Inline the Unicode character width database
+    
+    This is faster than invoking the GLib methods.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2655
+
+ src/meson.build               |    18 +
+ src/unicode-width-generate.py |   133 +
+ src/unicode-width-test.cc     |    94 +
+ src/unicode-width.hh          | 11589 ++++++++++++++++++++++++++++++++++++++++
+ src/vte.cc                    |    21 +-
+ 5 files changed, 11836 insertions(+), 19 deletions(-)
+
+commit 76c1f7a27b53d51a65d1246f8e0436bff92b0af2
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Tue Nov 28 21:06:24 2023 +0100
+
+    ring: Fix error handling in the rewrapping code
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2699
+
+ src/ring.cc | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+commit e8b244ca982a86bddcd4f1da6cadf3d7cb6398be
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Tue Nov 28 16:17:49 2023 +0100
+
+    stream: Add debug assertions verifying the snake's integrity
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2699
+
+ src/vtestream-file.h | 48 +++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 47 insertions(+), 1 deletion(-)
+
+commit 27bde60e8aef578c3a87f239c7cf70dc8fbed8df
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Tue Nov 28 11:36:52 2023 +0100
+
+    stream: Fix a rare corruption when advancing the tail
+    
+    When the snake's tail advances by multiple blocks at once, through
+    a state chance, then the snake entered an inconsistent state,
+    subsequently causing scrollback data corruptions or even a crash.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2699
+
+ src/vtestream-file.h | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 47ac92b5810162dd9e014e5e60eaf108654c731e
+Author: Andre Klapper <a9016009@gmx.de>
+Date:   Tue Nov 28 12:21:03 2023 +0100
+
+    DOAP: Replace defunct mailing list with Discourse support forum
+
+ vte.doap | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 727f8c1034176b70871ba2eedca306a15caea191
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Nov 26 21:09:04 2023 +0100
+
+    Revert "vte: drive updates from GdkFrameClock"
+    
+    This reverts commit 4903c11ffcc6919f844304897dc3b9f9e9f67854.
+    
+    This causes display corruption and occasional crashes.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2699
+
+ src/vte.cc         | 351 +++++++++++++++++++++++++++++++++++++++++++++++------
+ src/vtedefines.hh  |   3 +
+ src/vteinternal.hh |  10 +-
+ 3 files changed, 325 insertions(+), 39 deletions(-)
+
+commit 964c27337cf6d0eaaf8c4020b51ce33a1a7cd9bf
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Nov 24 21:27:14 2023 +0100
+
+    widget: Add context menu support
+    
+    Add a setup-context-menu signal emitted when a context menu can be
+    shown, and context-menu-model and context-menu properties to provide
+    the actual menu.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2530
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2593
+
+ src/app/app.cc        | 115 ++++++++++----------
+ src/refptr.hh         |   7 ++
+ src/vte.cc            | 113 ++++++++++++++++----
+ src/vte/vteterminal.h |  35 +++++++
+ src/vtegtk.cc         | 283 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/vtegtk.hh         |   3 +
+ src/vteinternal.hh    |   1 +
+ src/widget.cc         | 269 ++++++++++++++++++++++++++++++++++++++++++++++-
+ src/widget.hh         | 129 ++++++++++++++++++++++-
+ 9 files changed, 864 insertions(+), 91 deletions(-)
+
+commit 11241641d2ad0c9132e44fb14e7ac2e9cb09f378
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Nov 24 21:27:14 2023 +0100
+
+    draw: Add some constexpr to Rectangle methods
+
+ src/drawing-context.hh | 23 ++++++++++++++---------
+ 1 file changed, 14 insertions(+), 9 deletions(-)
+
+commit 159ea140580954281924370cef0f08266155290d
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Nov 24 21:27:14 2023 +0100
+
+    widget: Improve yalign docs
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2610
+
+ src/vtegtk.cc | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+commit b98b1d40f82df10b6e2079e97a5e5e26b3417b85
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Nov 22 10:01:23 2023 +0100
+
+    build: Suppress a warning about an unused variable in non-debug mode
+
+ src/vteaccess.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 7c033ed658e1c3d955334b42aa81187f6b589272
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sun Nov 19 15:40:42 2023 +0100
+
+    lib: Do not initialize cells before inserting characters
+    
+    This brings a small speedup.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2695
+
+ src/vte.cc        |  6 ++++--
+ src/vterowdata.cc | 12 ++++++++++++
+ src/vterowdata.hh |  1 +
+ 3 files changed, 17 insertions(+), 2 deletions(-)
+
+commit de78d7274bd2127cd574d033a04c298bd1ea7432
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sun Nov 19 10:40:09 2023 +0100
+
+    lib: Fix lines unwrapping too far
+    
+    This bug was introduced in the previous commit.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2694
+
+ src/vte.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 831fb03c95d7008e50461a1f86ced251f32abe1a
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sat Nov 18 20:46:17 2023 +0100
+
+    lib: Speed up inserting runs of ASCII characters
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2692
+
+ src/vte.cc         | 112 ++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ src/vteinternal.hh |   2 +
+ 2 files changed, 112 insertions(+), 2 deletions(-)
+
+commit 90bdd5bb36f82c948e4a6053fbdfb7383f8eec8c
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Thu Nov 16 18:20:54 2023 +0100
+
+    lib: Simplify invalidation bounding box tracking
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2691
+
+ src/vte.cc         | 24 +-----------------------
+ src/vteinternal.hh |  1 -
+ 2 files changed, 1 insertion(+), 24 deletions(-)
+
+commit 6d646c483b53912c2cbc8092664fb5ad716c4ea9
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Fri Nov 17 21:32:33 2023 +0100
+
+    emulation: Fix cursor position after an escape sequence initiated resize
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2258
+
+ src/vte.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 6b947f6e13def60ed5a9cf98a11d3b1621acf447
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Nov 17 21:17:50 2023 +0100
+
+    lib: Remove unnecessary "struct"s
+    
+    Rename vte_scrolling_region to vte::scrolling_region.
+
+ src/vte.cc         | 10 +++++-----
+ src/vteinternal.hh | 34 +++++++++++++++++++++-------------
+ src/vteseq.cc      | 12 ++++++------
+ 3 files changed, 32 insertions(+), 24 deletions(-)
+
+commit 3ca3d87c8f7f472db797fd118adb34efe70247b7
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Nov 6 14:42:52 2023 +0100
+
+    emulation: Save/restore along with the cursor whether wrapping will occur
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2673
+
+ src/vte.cc         | 2 ++
+ src/vteinternal.hh | 1 +
+ src/vteseq.cc      | 1 -
+ 3 files changed, 3 insertions(+), 1 deletion(-)
+
+commit 0be325dc217c80f61a291d15a9fd07fa68460492
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Fri Oct 27 10:47:02 2023 +0200
+
+    emulation: Make ED 2 and EL 2 clear the pending wrap flag
+
+ src/vteseq.cc | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+commit 276fd3a314046833f0fb866c582721b82ee17f98
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Thu Oct 26 12:33:30 2023 +0200
+
+    emulation: Make DA1 report horizontal scrolling support
+    
+    Together with the dozen previous commits, this one
+    fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2526
+
+ src/vteseq.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+commit 8417e805ecf8f49af51371e7f7aa30a2c4fd9f89
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Thu Oct 26 08:09:09 2023 +0200
+
+    emulation: Fix ECH not to expand the row beyond the terminal's width
+
+ src/vteseq.cc | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 05b09b8bb7b01faea9ebe5aa5744c5fd2bfe1183
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 25 11:43:58 2023 +0200
+
+    emulation: Make DECCOLM and DECALN reset the scrolling region
+    
+    Also make a window size change and DECALN reset origin mode.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2668
+
+ src/vte.cc    | 1 +
+ src/vteseq.cc | 5 ++++-
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+commit 67d0791fdf08bb4427edf9f4382b3492eff1a7e0
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Thu Oct 19 21:58:17 2023 +0200
+
+    emulation: Adjust Cursor Position Report (CPR) for left and right margins
+
+ src/vteseq.cc | 48 ++++++++++++++++++++++++++++--------------------
+ 1 file changed, 28 insertions(+), 20 deletions(-)
+
+commit fb230c35c7348093d58428d8a85ef6596b31847a
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 18 15:14:42 2023 +0200
+
+    emulation: Implement Forward Index (DECFI) and Back Index (DECBI)
+
+ src/parser-seq.py |  4 ++--
+ src/vteseq.cc     | 16 ++++++++++++----
+ 2 files changed, 14 insertions(+), 6 deletions(-)
+
+commit d3525dc17e9161d1ac2efce2a5c2bb4b9ea86287
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 18 12:24:41 2023 +0200
+
+    emulation: Implement Insert Column (DECIC) and Delete Columnn (DECDC)
+
+ src/parser-seq.py |  4 ++--
+ src/vteseq.cc     | 41 +++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 39 insertions(+), 6 deletions(-)
+
+commit b1e9c7c68219286ce3b4f12f204a15134d70f3ac
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 25 12:25:19 2023 +0200
+
+    emulation: Adjust IRM mode for left and right margins
+
+ src/vte.cc         | 25 +++++++++++++------------
+ src/vteinternal.hh |  1 -
+ src/vteseq.cc      |  6 +++---
+ 3 files changed, 16 insertions(+), 16 deletions(-)
+
+commit 9c0827025f617db5eb573d38ca68f297e157bd54
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 18 15:09:52 2023 +0200
+
+    emulation: Adjust Insert Character (ICH) and Delete Character (DCH)
+    
+    ... for left and right margins.
+    
+    Also modify ICH to insert empty cells rather than spaces.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2676
+
+ src/vteinternal.hh |  2 --
+ src/vteseq.cc      | 95 ++++++++++++++++++------------------------------------
+ 2 files changed, 32 insertions(+), 65 deletions(-)
+
+commit a65c04af90dc77ca39663a8eb6ccdec2feb4a0f4
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 18 11:23:53 2023 +0200
+
+    emulation: Implement Scroll Left (SL) and Scroll Right (SR)
+
+ src/parser-seq.py  |   4 +-
+ src/vte.cc         | 160 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/vteinternal.hh |   6 ++
+ src/vteseq.cc      |  34 ++++++++++--
+ 4 files changed, 198 insertions(+), 6 deletions(-)
+
+commit f1b3b1a97e82dd25cc848a89bc2599236e076fab
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Nov 6 13:51:57 2023 +0100
+
+    emulation: Minor cleanup at smart tab handling
+
+ src/vteseq.cc | 7 ++-----
+ 1 file changed, 2 insertions(+), 5 deletions(-)
+
+commit 467ce417b9c566182759cd688ff32f987632c2bf
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 18 09:41:47 2023 +0200
+
+    emulation: Adjust cursor moving operations to respect left and right margins
+    
+    Also fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2675
+
+ src/tabstops-test.cc |  18 +++--
+ src/tabstops.hh      |   8 +-
+ src/vte.cc           |   2 +-
+ src/vteinternal.hh   |   3 +-
+ src/vteseq.cc        | 208 ++++++++++++++++++++++++++++++++++-----------------
+ 5 files changed, 160 insertions(+), 79 deletions(-)
+
+commit da9afaac723928ca2f6ca59e58a4cb88a61e6439
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sun Oct 29 18:25:49 2023 +0100
+
+    emulation: Shuffle a few methods to a more logical order
+
+ src/vteinternal.hh |  6 ++--
+ src/vteseq.cc      | 88 +++++++++++++++++++++++++++---------------------------
+ 2 files changed, 48 insertions(+), 46 deletions(-)
+
+commit 7868486c4634bfb6ee099879796dc90c1eb41e27
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sun Oct 15 15:07:17 2023 +0200
+
+    emulation: Adjust vertical scrolling to respect left and right margins
+
+ src/vte.cc         | 190 +++++++++++++++++++++++++++++++++++++++++------------
+ src/vteinternal.hh |   8 ++-
+ src/vteseq.cc      |  26 +++++---
+ 3 files changed, 171 insertions(+), 53 deletions(-)
+
+commit 928a0d5a540a4fc14d19e6db4585f27e4b4b37ca
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Nov 6 13:56:14 2023 +0100
+
+    doc: Add scrolling-region.txt
+
+ doc/scrolling-region.txt | 183 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 183 insertions(+)
+
+commit a519857ddb27f8654b92762e6466dba000a9643e
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Thu Oct 26 12:14:54 2023 +0200
+
+    emulation: Adjust cursor tracking and autowrapping for the right margin
+    
+    With right margin support, we can no longer rely on the cursor being off
+    to the right to denote that the next character will wrap. An additional
+    boolean is required to distinguish this from the cursor being explicitly
+    moved to just beyond the right margin.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2677
+
+ src/vte.cc         | 27 +++++++++++++++++----
+ src/vteinternal.hh | 23 ++++++++++++++----
+ src/vteseq.cc      | 70 +++++++++++++++++++++++++++++++++---------------------
+ 3 files changed, 84 insertions(+), 36 deletions(-)
+
+commit ac1c5e2eae3ad43ed58f82a6b26011d951b823de
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 25 12:26:30 2023 +0200
+
+    emulation: Execute SCORC even when DECLRMM is enabled
+
+ src/vteseq.cc | 3 ---
+ 1 file changed, 3 deletions(-)
+
+commit a7918a3e930db9afb2c9a362fd80453a883ae120
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Fri Oct 13 12:12:57 2023 +0200
+
+    emulation: Track DECSLRM left and right margins
+    
+    First step towards fixing https://gitlab.gnome.org/GNOME/vte/-/issues/2526
+
+ src/modes.py        |  2 +-
+ src/parser-reply.hh |  3 ++-
+ src/vteseq.cc       | 40 +++++++++++++++++++++++++++++++++-------
+ 3 files changed, 36 insertions(+), 9 deletions(-)
+
+commit 0a49d0f722614f7d985362bd6e54206d7dd7f9ef
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sun Oct 29 20:17:50 2023 +0100
+
+    emulation: Fix the behavior if invalid scrolling region is requested
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2666
+
+ src/vteseq.cc | 30 ++++++++++--------------------
+ 1 file changed, 10 insertions(+), 20 deletions(-)
+
+commit 306e74d9d197d63a1ed45edae653a162881bd24d
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Oct 16 15:27:35 2023 +0200
+
+    emulation: Scroll Up (SU) and Delete Line (DL) push to the scrollback
+    
+    ... if the scrolling region includes the top row.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2663
+
+ src/vte.cc         | 216 ++++++++++++++++++++++++++++++++++++++---------------
+ src/vteinternal.hh |  10 ++-
+ src/vteseq.cc      | 194 ++++++++---------------------------------------
+ 3 files changed, 194 insertions(+), 226 deletions(-)
+
+commit fd4d59ccff6051d7ae443dfc806590ff29ad2323
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Oct 16 14:55:47 2023 +0200
+
+    emulation: Disregard bce in the scrolling region
+    
+    ... if scrolling occurs due to autowrapping and the scrolling region
+    starts at row 2 or below.
+    
+    This was an oversight in commit a26a60b8e564968b61716f0d2e52e17cd9362413.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2663#note_1866082
+
+ src/vte.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 5d4301d8d1087b7a09dd2e81803a8ea09107bfc7
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sun Oct 15 17:00:20 2023 +0200
+
+    emulation: Extend vte_scrolling_region to track all four margins
+    
+    ... and provide convenience methods, too.
+    
+    Also, fix reporting the scrolling region if it's at its defaults.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2669
+
+ src/vte.cc         |  29 ++++++--------
+ src/vteinternal.hh |  31 ++++++++++++++-
+ src/vteseq.cc      | 111 ++++++++++++++++-------------------------------------
+ 3 files changed, 75 insertions(+), 96 deletions(-)
+
+commit cda3ca1b77575c0ee086b1a09fc840969b0145ec
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sun Oct 15 15:53:26 2023 +0200
+
+    emulation: Rename start/end margins to top/bottom
+
+ src/vte.cc         |  38 +++++------
+ src/vteinternal.hh |   2 +-
+ src/vteseq.cc      | 192 ++++++++++++++++++++++++++---------------------------
+ 3 files changed, 116 insertions(+), 116 deletions(-)
+
+commit 6a3c0b78d3e5b0c42c52296c09602c2dbba23e91
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 25 13:44:09 2023 +0200
+
+    emulation: Preserve empty cells as NULs when computing DECRQCRA checksum
+    
+    Related to https://gitlab.gnome.org/GNOME/vte/-/issues/24
+
+ src/vte.cc         | 12 ++++++++++--
+ src/vtegtk.cc      |  3 ++-
+ src/vteinternal.hh |  1 +
+ 3 files changed, 13 insertions(+), 3 deletions(-)
+
+commit 89efc23118e54e6069b7feca38b18d3ccc8b38aa
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Oct 25 13:44:09 2023 +0200
+
+    widget: Remove an unused parameter of get_text()
+
+ src/vte.cc         | 18 ++++++------------
+ src/vteaccess.cc   |  3 +--
+ src/vtegtk.cc      |  3 +--
+ src/vteinternal.hh |  7 ++-----
+ 4 files changed, 10 insertions(+), 21 deletions(-)
+
+commit d4efcb454d3096b8f32b9a6fb4507e7fbf404b34
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Nov 15 22:43:43 2023 +0100
+
+    bindings: vala: Depend on graphene-gobject-1.0
+    
+    ... instead of graphene-1.0.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2650
+
+ bindings/vala/meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 8ce544e879449705663ddfa1b0e445d211a01644
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Nov 13 23:25:02 2023 +0100
+
+    build: Silence deprecation warnings
+    
+    These warnings are just an annoyance; silence them via the compiler.
+
+ meson.build | 1 +
+ 1 file changed, 1 insertion(+)
+
+commit f6658a23bb8c7126e9e040a49531d6f3ddf1e367
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Oct 31 11:13:49 2023 -0700
+
+    drawing-gsk: fix a potential crash with empty runs
+    
+    This fixes a crash found while running vtebench on the GSK renderer.
+    Basically the same sort of thing we do on GTK 3.
+
+ src/drawing-gsk.cc      |  3 +++
+ src/fonts-pangocairo.cc | 13 ++++++++-----
+ 2 files changed, 11 insertions(+), 5 deletions(-)
+
+commit 4903c11ffcc6919f844304897dc3b9f9e9f67854
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Mon Oct 30 21:08:05 2023 +0100
+
+    vte: drive updates from GdkFrameClock
+    
+    Instead of using timeouts to drive updates to the display we can use the
+    frame clock tick callback to drive those updates. This allows achieving
+    frame rates closer aligned to the monitors vblank timing.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2678
+
+ src/vte.cc         | 351 ++++++-----------------------------------------------
+ src/vtedefines.hh  |   3 -
+ src/vteinternal.hh |  10 +-
+ 3 files changed, 39 insertions(+), 325 deletions(-)
+
+commit a42afc1c502bd940eaacdd558701fd8403230777
+Author: Luis Javier Merino Morán <ninjalj@gmail.com>
+Date:   Mon Oct 30 21:08:05 2023 +0100
+
+    emulation: Also use invisible bit for DECRQCRA checksum
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/24
+
+ src/vte.cc | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit fff3252d5130520818447c3603ffdd1f83d4703c
+Author: Luis Javier Merino Morán <ninjalj@gmail.com>
+Date:   Sun Oct 29 09:04:04 2023 +0100
+
+    emulation: Correct DECRQCRA negation
+    
+    It should be done before masking; and move that to ::checksum_area().
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/24
+
+ src/vte.cc    | 1 +
+ src/vteseq.cc | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+commit 2273064a86514df1cd0bb863c06cea21e20e624e
+Author: Luis Javier Merino Morán <ninjalj@gmail.com>
+Date:   Sat Oct 28 22:57:03 2023 +0200
+
+    emulation: make DECRQCRA behave as VT520
+    
+    Support attributes (bold, blink, reverse and underline), and return
+    complemented value.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/24
+
+ src/vte.cc    | 20 ++++++++++++++++++--
+ src/vteseq.cc |  2 +-
+ 2 files changed, 19 insertions(+), 3 deletions(-)
+
+commit e75a634da0eece2f45b3c412beac74d373fa2d11
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Oct 28 22:57:03 2023 +0200
+
+    parser: modes: Additions from recent xterm
+
+ src/modes.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit 0539290d083eb00b4de7676264caffa229ef748f
+Author: Luis Javier Merino Morán <ninjalj@gmail.com>
+Date:   Sat Oct 21 09:59:28 2023 +0200
+
+    build: Fix compile in debug mode
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2679
+
+ src/vte.cc       | 4 +++-
+ src/vteaccess.cc | 2 +-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+commit cbf6c2345321989bd76cc216e3dc6eaf65e2e0d0
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Wed Oct 18 14:18:03 2023 -0700
+
+    debug: use vte_assert_cmp* functions
+    
+    We have vte_assert_cmp*() functions now which can be compiled out of
+    release builds (unlike g_assert_cmp*() functions. Use them everywhere
+    except for the unit tests.
+
+ src/parser-glue.hh  | 10 +++++-----
+ src/parser.hh       |  2 +-
+ src/ring.cc         | 32 ++++++++++++++++----------------
+ src/ringview.cc     | 14 +++++++-------
+ src/sixel-parser.hh |  2 +-
+ src/tabstops.hh     |  6 ++++--
+ src/vte.cc          | 22 +++++++++++-----------
+ src/vteseq.cc       |  2 +-
+ src/vteunistr.cc    |  4 +++-
+ 9 files changed, 49 insertions(+), 45 deletions(-)
+
+commit baa0ae137bec6463b2a75c955da5f3f754a1109c
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Oct 17 13:35:45 2023 -0700
+
+    bidi: reuse char and index arrays across runs
+    
+    This allows reusing our allocations for state across runs of the
+    BidiRunner::explicit_line_shape() and BidiRunner::implicit_paragraph().
+    Doing so can yield more than 4% reduction in CPU usage spent on allocation
+    tracking.
+
+ src/bidi.cc | 85 ++++++++++++++++++++++++++++++++-----------------------------
+ src/bidi.hh | 28 +++++++++++++++-----
+ 2 files changed, 66 insertions(+), 47 deletions(-)
+
+commit bd2bca2aacb7d8676627b753d69e8091692c5343
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Oct 17 12:46:24 2023 -0700
+
+    terminal: require caller to allocate GString for get_text()
+    
+    This pushes the allocation of the GString for Terminal::get_text() and
+    associated functions to the caller. In doing so, this allows reuse of
+    m_match_content. Since a maximized window can easily contain a page or
+    more of data, avoiding the power-of-two growth and GString maybe_expand()
+    checks here is useful. It combines well with the previous commit which
+    allows for reuse of the m_match_attributes array for the same reason.
+    
+    You'll mostly see this behavior when the mouse is sitting over the
+    terminal widget and there are a lot of updates to the screen.
+
+ src/vte.cc         | 135 +++++++++++++++++++++++++++++------------------------
+ src/vteaccess.cc   |   9 ++--
+ src/vtegtk.cc      |  25 +++++-----
+ src/vteinternal.hh |  36 +++++++-------
+ 4 files changed, 112 insertions(+), 93 deletions(-)
+
+commit 3f9dd9d93327e0dc060fce2cdf9810e90701ded5
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Mon Oct 16 21:35:51 2023 -0700
+
+    vteinternal: use specialized array for char attributes
+    
+    When the mouse pointer is within the widget we do a lot of of querying for
+    the text (each changing frame) due to match_hilite_update(). This spends
+    a few percent simply doing GArray sizing calculations.
+    
+    This patch does like we've done elsewhere and saves a bit over 3% CPU when
+    running btop at 10hz w/ the mouse pointer within the widget.
+
+ src/vte.cc         | 144 ++++++++++++++++++++++-------------------------------
+ src/vteaccess.cc   |  85 +++++++++++--------------------
+ src/vtegtk.cc      |  27 +++++-----
+ src/vteinternal.hh |  22 +++++---
+ 4 files changed, 117 insertions(+), 161 deletions(-)
+
+commit be4f205ea65dafda1308d8a408bafc91a5989033
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Oct 18 22:11:24 2023 +0200
+
+    draw: minifont: Only pad character where necessary
+    
+    So far only the diagonal line characters (U+2571..3) need to draw
+    slightly outside their cell, so only enlarge the character surface for
+    them and keep all other characters at the exact cell size.
+
+ src/minifont.cc | 7 ++-----
+ 1 file changed, 2 insertions(+), 5 deletions(-)
+
+commit a47e6a3e1847fc1d46f063d6866f48a30682953c
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Oct 18 22:11:24 2023 +0200
+
+    draw: minifont: Fix drawing of diagonals
+    
+    U+2571, U+2572, and U+2573 must connect diagonally, so they draw
+    slightly outside their cell.  The constant padding of 2px either side
+    was not enough to accomodate light_line_width/2 overdrawing, so make the
+    padding per-character overridable.
+
+ src/minifont.cc | 70 ++++++++++++++++++++++++++++++++++++---------------------
+ src/minifont.hh | 14 ++++++++----
+ 2 files changed, 54 insertions(+), 30 deletions(-)
+
+commit c99989d7d72019f3f5411cce9db97088728895c7
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Oct 18 22:11:24 2023 +0200
+
+    draw: Style fixes
+
+ src/drawing-cairo.hh   | 78 +++++++++++++++++++++++---------------------
+ src/drawing-context.hh |  8 +++--
+ src/drawing-gsk.hh     | 88 +++++++++++++++++++++++++++-----------------------
+ 3 files changed, 95 insertions(+), 79 deletions(-)
+
+commit 80b99caf47e1bed50f2dc7c1b347d9faa7c1daf2
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Oct 18 22:11:24 2023 +0200
+
+    draw: Include drawing-context.hh not drawing-cairo.hh
+
+ src/drawing-context.cc | 2 +-
+ src/minifont.cc        | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+commit 5ed604a300e419ec9d27c854e5d64b243bae05d2
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Oct 18 22:11:24 2023 +0200
+
+    draw: Use a named constant
+    
+    ... not simply a number. Makes it a bit easier to see what's going on.
+
+ src/drawing-context.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+commit c557b2300c835f0d22b6647c9155efdf101d0c2e
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Wed Oct 18 22:11:24 2023 +0200
+
+    draw: implement native GTK 4 drawing
+    
+    This abstracts DrawingContext into an abstract base class with two
+    implementations: DrawingCairo and DrawingGsk. The DrawingCairo version
+    is only compiled on GTK 3 and keeps the design largely the same as it was
+    before, using one large Cairo context. The DrawingGsk attempts to provide
+    the same feature set but uses native GtkSnapshot and GskRenderNode
+    features.
+    
+    Minifont has been changed to be more performance friendly in GTK 4. Cairo
+    surfaces are maintained in a sized cache based on size and character. They
+    are drawn onto the canvas with as a mask for color which is slightly
+    different on GTK 3 to how they were drawn before. On GTK 4 they are also
+    drawn as a mask for color. A new fast path has been added to the GTK 4
+    renderer to improve performance with this pattern. It, fundamentally, is
+    the same pattern GTK uses internally for it's glyph cache.
+    
+    For GTK 4, only the PangoGlyphString coverage is used. This allows the
+    creation of GskTextNode directly from the built strings.
+    
+    There are possibilities to improve performance further by caching the
+    container GskRenderNode for each row and re-using them frame to frame.
+    However, GTK will determine the appropriate damage region for the frame
+    regardless.
+    
+    A new Rectangle struct has been added to allow calling code to create the
+    rectangle in the best format used by the underlying rendering technology
+    without further conversions.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2553
+
+ src/drawing-cairo.cc    | 589 +++++++++------------------------
+ src/drawing-cairo.hh    | 204 +++---------
+ src/drawing-context.cc  | 350 ++++++++++++++++++++
+ src/drawing-context.hh  | 335 +++++++++++++++++++
+ src/drawing-gsk.cc      | 268 +++++++++++++++
+ src/drawing-gsk.hh      | 116 +++++++
+ src/fonts-pangocairo.cc |  22 ++
+ src/fonts-pangocairo.hh |  28 +-
+ src/fwd.hh              |   1 +
+ src/meson.build         |  18 +-
+ src/minifont.cc         | 845 ++++++++++++++++++++++++++++++------------------
+ src/minifont.hh         |  34 +-
+ src/vte.cc              | 132 ++++----
+ src/vteinternal.hh      |  15 +-
+ src/widget.hh           |   2 +
+ 15 files changed, 1966 insertions(+), 993 deletions(-)
+
+commit f83883d4d3f2cbf73516e073a61d715a5d2aadd2
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Oct 16 21:14:05 2023 +0200
+
+    draw:minifont: Add comment to the LR and RL hatching patterns
+    
+    ... explaining their differences in light of issue#2672.
+
+ src/minifont.cc | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+commit a097c83b14344c3061723ff5a7313a4d7f9d79ee
+Author: Efstathios Iosifidis <eiosifidis@gnome.org>
+Date:   Mon Oct 16 18:09:04 2023 +0000
+
+    Update Greek translation
+    
+    (cherry picked from commit eee37c871173d04387cd0004dde7f8676f390f62)
+
+ po/el.po | 65 ++++++++++++++++++++++++++++++++++++++++++++--------------------
+ 1 file changed, 45 insertions(+), 20 deletions(-)
+
+commit 2796b4641a377b11254b97c4f0a3b349c6333337
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Sat Oct 14 23:24:43 2023 +0200
+
+    minifont: remove unused attr parameter
+
+ src/drawing-cairo.cc | 1 -
+ src/minifont.cc      | 1 -
+ src/minifont.hh      | 1 -
+ 3 files changed, 3 deletions(-)
+
+commit 24af21dbe8555bd7fc8cc0e6212c95982371305d
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Sat Oct 14 23:24:43 2023 +0200
+
+    vtetypes: add GdkRGBA conversion utility
+
+ src/vtetypes.hh | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+commit 05812adc66d947f477a551e31de00fb1276e72dc
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Sat Oct 14 23:24:43 2023 +0200
+
+    app: avoid using Cairo fallback nodes on GTK 4
+    
+    We don't want to create a fallback (Cairo) node unless necessary.
+
+ src/app/app.cc | 34 +++++++++++++++-------------------
+ 1 file changed, 15 insertions(+), 19 deletions(-)
+
+commit bd5af21e48ebff893a47bbd24fb1c31b04dca225
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Sat Oct 14 23:24:43 2023 +0200
+
+    build: bump GTK requirement to 4.12
+    
+    To better implement native drawing for GTK 4, 4.12 is needed. It provides
+    GDK_MEMORY_A8 which can be used with mask nodes (added in 4.10) for
+    colorizing a texture using the textures alpha channel plus the color rgb
+    values.
+
+ meson.build | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 2dd6e93b83a4da2169bfa64d10d6dc5e76b3cf5b
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Oct 10 22:26:03 2023 +0200
+
+    draw: minifont: Fix lr/rl hatching pattern to tile seamlessly
+    
+    The characters U+1FB98 UPPER LEFT TO LOWER RIGHT FILL and
+    U+1FB99 UPPER RIGHT TO LOWER LEFT FILL when put together vertically or
+    horizontally were not tiling seamlessly at all sizes.  To fix this, the
+    latter's hatching pattern needs to be shifted up (or left) by one pixel.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2672
+
+ src/minifont.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 4cd5c1283f6e38b6c5feb96c23d912656191fe31
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Oct 3 15:19:34 2023 -0700
+
+    vte: batch printable character insertion
+    
+    If we have a printable character that was just inserted, follow-up and
+    try to insert more that are simple in nature and do not require
+    re-entering either the UTF-8 decoder or vte::parser::Parser.
+
+ src/vte.cc | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+commit 8a25ad887ed895523ef603270ad64c890f1dbf36
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Mon Oct 2 17:22:23 2023 -0700
+
+    parser: move vte_parser_t into vte::parser::Parser
+    
+    This is just the first step towards being able to inline the very hot
+    paths from vte.cc through the Parser structure. Currently everything is
+    inlined but my guess is that we'll want to be selective about that and
+    make some things not inline and other things hoisted through an inline
+    function.
+    
+    Performance is roughly the same as before, except that I notice ever so
+    slightly more frames are rendered with this version when using the GTK 3
+    implementation.
+
+ src/parser-glue.hh   |  475 +----------------
+ src/parser-test.cc   |    1 +
+ src/parser.cc        | 1285 +++-------------------------------------------
+ src/parser.hh        | 1382 +++++++++++++++++++++++++++++++++++++++++++++++++-
+ src/sixel-context.hh |    1 -
+ 5 files changed, 1435 insertions(+), 1709 deletions(-)
+
+commit 83d05504cc9aeb4cd89a5717a803295dad8942de
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Wed Oct 4 16:21:40 2023 -0700
+
+    rowdata: use std::fill_n()
+    
+    Surprisingly, this is a couple percent speedup on a tight-loop test which
+    cats a very large file to stdout.
+
+ src/vterowdata.cc | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+commit 662f708738e894021bbf5634a427d193828baf09
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Oct 5 20:01:36 2023 +0200
+
+    build: Fix the build with sixel enabled
+    
+    Fixes a regression from commit 2d7788157b8788786feba57cb3e8de31629ff3b5.
+
+ src/vte.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 8569f39e24125d52694ae02dd8aadd540f82db10
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Wed Sep 27 14:27:42 2023 -0700
+
+    ring, fonts: use g_string_truncate() to reset string
+    
+    g_string_truncate() can be hoisted into the caller unlike
+    g_string_set_size(). This will compile into what is basically just
+    buffer->str[0] = 0, buffer->len = 0;
+
+ src/fonts-pangocairo.cc | 2 +-
+ src/ring.cc             | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+commit fdb3468a7c7f063689c88ae91a6c8c570117a15f
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Oct 3 13:08:32 2023 -0700
+
+    build: compile out assertions and cast-checks
+    
+    In production builds, many GNOME libraries compile out both assertions and
+    cast checks. These often have significant overhead in tight loops which
+    we don't need in production releases but are critical during the
+    development phase to avoid shipping obvious bugs.
+    
+    This does the same for libvte libraries.
+    
+    Production builds are anything not starting with 'debug' in the profile.
+    That includes "plain" as well as "release" as distributions almost always
+    use "plain" with their custom compiler flags.
+    
+    Testing with an extremely large file cat to vte-2.91 this yields an 8%
+    improvement compared to the previous commit.
+
+ meson.build        |  6 +++++-
+ src/attr.hh        |  4 +++-
+ src/bidi.cc        | 20 ++++++++++----------
+ src/debug.h        | 14 ++++++++++++++
+ src/meson.build    |  4 ++--
+ src/parser-glue.hh | 11 ++++++-----
+ 6 files changed, 40 insertions(+), 19 deletions(-)
+
+commit 2d7788157b8788786feba57cb3e8de31629ff3b5
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Fri Sep 29 18:32:04 2023 -0700
+
+    ring: remove VteRing C wrapper for vte::base::Ring
+    
+    Part of transitioning to vte::base::Ring was a intermediate _vte_ring_*()
+    wrapper API. This C API was preventing the compiler from inlining various
+    API that was desired to be inlined.
+    
+    This removes the C wrapper and updates all of the callers to use the
+    appropriate vte::base::Ring() methods instead.
+    
+    Additionally, functions which were intended to be inlined have been
+    inlined and do indeed remove some of the Ring overhead in profiles.
+
+ src/ring.hh        |  31 --------
+ src/ringview.cc    |   2 +-
+ src/vte.cc         | 217 ++++++++++++++++++-----------------------------------
+ src/vteinternal.hh |  66 +++++++++++++---
+ src/vteseq.cc      |  34 ++++-----
+ 5 files changed, 149 insertions(+), 201 deletions(-)
+
+commit e9eeb34dab232c05850136405faaf536f172c674
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Fri Sep 29 15:13:22 2023 -0700
+
+    ring: inline vte::base::Ring::index_writable()
+    
+    This function gets called a lot from various places, and previously was
+    done through a C wrapper. It is a good candidate for inling, but cannot
+    do that while the C wrapper is in use.
+    
+    So both make it inlined and remove the C wrapper since it was likely just
+    there for transition purposes anyway.
+
+ src/ring.cc   |  7 -------
+ src/ring.hh   |  8 ++++++--
+ src/vte.cc    |  8 ++++----
+ src/vteseq.cc | 14 +++++++-------
+ 4 files changed, 17 insertions(+), 20 deletions(-)
+
+commit 2ce13eb1b2f9b0069b395f3b9b8acc94459c7683
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Fri Sep 29 15:02:25 2023 -0700
+
+    ring: inline vte::base::Ring::ensure_writable()
+    
+    This function is called extremely often but almost never (only once in
+    my local testing) goes past the likely branch. Perfect candidate for
+    hosting into the inline and to avoid function call/return.
+
+ src/ring.cc | 13 -------------
+ src/ring.hh |  9 ++++++++-
+ 2 files changed, 8 insertions(+), 14 deletions(-)
+
+commit 41c062960a4da20e1b7591f9a0265f67f53f95d7
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Thu Sep 28 13:43:37 2023 -0700
+
+    unistr: fix typo in gtk-doc
+
+ src/vteunistr.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 17541a35eeaec1c21594bcf3df635e755ed05b8d
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Sep 29 22:18:16 2023 +0200
+
+    utf8: Add some more tests
+    
+    Test the decoder on invalid 5- and 6-byte old-style-UTF-8 sequences.
+
+ src/utf8-test.cc | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+commit 46f0143a668bec298bbff8b9d4ee9f0042f65f88
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Thu Sep 28 15:47:49 2023 -0700
+
+    unistr: inline unichar into GString as UTF-8
+    
+    This code path is *extremely* hot. This patch brings over the UTF-8
+    conversion and uses g_string_append_len() which is now inlined by GLib
+    to allow for simply memcpy()'s the utf8 bytes into the destination string.
+    
+    The cost of calling g_string_append_unichar() is extremely high. It
+    currently is treated the same as a g_string_insert_unichar() at the end
+    which does not allow for the same level of optimization as a dedicated
+    code path for append().
+    
+    Additionally, UTF-8 conversion does some of the same checks which the
+    calling code would have already done. Some of that may be able to be
+    shared when inlined into the caller.
+    
+    Even with other string related patches applied, this is good for a couple
+    more percent of CPU cost savings.
+
+ src/vteunistr.h | 53 +++++++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 47 insertions(+), 6 deletions(-)
+
+commit dbcc9dfae1903644262eacb9457ec4a5c90c619c
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Thu Sep 28 15:10:03 2023 -0700
+
+    unichar: hoist common unichar width into caller
+    
+    The most common case we run into here is the < 0x80 which will always be
+    a cell width of 1. The compiler does not seem to be inlining even
+    portions of _vte_unichar_width() naturally, so force it with a macro to
+    hoist just the common hot path into the caller.
+    
+    This is good for about 1% of savings similar to the previous inlines.
+
+ src/vte.cc | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+commit 6365311d158fad42d54bf3bb5d8fc3d72a97e75d
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Thu Sep 28 19:06:36 2023 -0700
+
+    stream: switch compression from zlib to LZ4
+    
+    Before this patch, vte::ring::Ring::freeze_row() was dominated by the cost
+    of writing compressed/encrypted data to the underlying file. That simply
+    disappears when using LZ4 compression instead.
+    
+    Fixes #2419
+
+ meson.build          |  4 +++-
+ src/meson.build      |  4 ++--
+ src/vtestream-file.h | 22 ++++++++--------------
+ 3 files changed, 13 insertions(+), 17 deletions(-)
+
+commit 342a0e3592c03a1be05515b9146842bab740e1d3
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Thu Sep 28 14:22:56 2023 -0700
+
+    unistr: hoist _vte_unistr_strlen() into caller
+    
+    For the common case (a gunistr which is exactly 1 character long), we can
+    host the check into the caller for as much as a 3.5% savings when comparing
+    vte::base::Ring::freeze_one_row() in a tight loop.
+
+ src/vteunistr.cc | 4 ++--
+ src/vteunistr.h  | 2 ++
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+commit 01ea98eddc8dafb185072bff104d874ed58e8784
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Thu Sep 28 14:03:32 2023 -0700
+
+    unistr: hoist g_string_append_unichar() into caller
+    
+    We avoid an extra function call/return for every character by hoisting the
+    g_string_append_unichar() into the caller for the common path.
+    
+    It may make sense to also hoist g_string_append_unichar() into at least
+    the g_string_append_c() case which has an inlined version too, or just
+    inline the entire utf-8 encode.
+    
+    This saves a bit more than 2.5% of overhead when comparing run to run
+    vte::base::Ring::freeze_one_row() in a tight loop.
+
+ src/vteunistr.cc | 6 ++----
+ src/vteunistr.h  | 9 +++++++++
+ 2 files changed, 11 insertions(+), 4 deletions(-)
+
+commit e429d16060a485d3abe60c9bb4a60a37faa0f37e
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Sep 26 14:53:22 2023 -0700
+
+    bidi: add VteBidiIndexes array using GdkArrayImpl
+    
+    This does the same thing to FriBidiStrIndex that we have for FriBidiChar
+    which is to "flatten" the acess to the array along with a number of other
+    features allowing the compiler to do what it does best instead of going
+    through a generic-sized array structure like GArray.
+
+ src/bidi.cc       | 34 ++++++++++++++++++++--------------
+ src/bidiarrays.hh | 11 ++++++++++-
+ 2 files changed, 30 insertions(+), 15 deletions(-)
+
+commit 1a8d53e99d51ab0c8f70782e76ffe073a2bf00bc
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Sep 26 11:34:28 2023 -0700
+
+    bidi: add VteBidiChars array of gunichar
+    
+    This removes the use of GArray for vteunistr building using the recent
+    import GdkArrayImpl. This removes a bunch of overhead in
+    g_array_maybe_expand() when building performing Bidi runs.
+
+ src/bidi.cc       | 50 +++++++++++++++++++++++++++-----------------------
+ src/bidiarrays.hh | 25 +++++++++++++++++++++++++
+ src/vteunistr.cc  | 18 ++++++++++--------
+ src/vteunistr.h   |  6 ++++--
+ 4 files changed, 66 insertions(+), 33 deletions(-)
+
+commit 02afa1919da6c489c71480d3f394ebb297e58646
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Sep 26 11:33:21 2023 -0700
+
+    import GdkArrayImpl for fast arrays
+    
+    This comes from significant array optimization in GDK over the past few
+    years. It allows us to have arrays inline with pre-allocated space as well
+    as avoiding an extra pointer chase in tight loops. Combined with knowing
+    the exact element sizes and alignment at compile time various memmove()
+    and memcpy() operations may be elided.
+
+ src/gdkarrayimpl.c | 322 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 322 insertions(+)
+
+commit 01c76e12b6e488af0c83df9b704d6c6056733b83
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Sep 26 09:59:37 2023 -0700
+
+    build-aux: add flatpak manifest for testing from Builder
+    
+    This allows selecting either the gtk3 or gtk4 profile from Builder's
+    "Active Configuration" menu. Clicking Run will build/run the specific
+    app (vte-2.91 or vte-2.91-gtk4) which simplifies first time contributions.
+    
+    These files are contributed under either GPLv3+ or LGPLv3+ to match
+    VTE itself.
+
+ build-aux/org.gnome.vte.gtk3.json | 31 +++++++++++++++++++++++++++++++
+ build-aux/org.gnome.vte.gtk4.json | 31 +++++++++++++++++++++++++++++++
+ 2 files changed, 62 insertions(+)
+
+commit 9a89de7683fc2842610b07fcf0845714da88bf7e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Sep 20 23:08:13 2023 +0200
+
+    ci: Only upload docs for tags
+
+ .gitlab-ci.yml | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit 50671fb77b51c3efd4d1ceaf49721319ab247ae6
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Sep 20 21:28:10 2023 +0200
+
+    Revert "widget: a11y: Add missing text changes on scrolling with modifications"
+    
+    This reverts commit 036d337cb84c3ff3e62c688f3f0a2a2056eb15ca.
+
+ src/vteaccess.cc | 159 +++++++++++--------------------------------------------
+ 1 file changed, 30 insertions(+), 129 deletions(-)
+
+commit b8e13a6b80965f9a7aecae026ab1460e92e78568
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Sep 20 21:28:10 2023 +0200
+
+    Revert "widget: a11y: Optimize text changes on scrolling with modifications"
+    
+    This reverts commit 0b63a182e14ec8014e5e18510484569806d61230.
+
+ src/vteaccess.cc | 216 ++++++++++++++++++++++++-------------------------------
+ 1 file changed, 94 insertions(+), 122 deletions(-)
+
+commit 6552c7d9f866d13d3308dc5bc91d360f5a63ae3b
+Author: JCWasmx86 <JCWasmx86@t-online.de>
+Date:   Wed Sep 20 21:28:10 2023 +0200
+
+    widget: VteTerminalSpawnAsyncCallback's error is nullable
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2647
+
+ src/vtegtk.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 0b63a182e14ec8014e5e18510484569806d61230
+Author: Samuel Thibault <samuel.thibault@ens-lyon.org>
+Date:   Mon Sep 11 02:03:26 2023 +0200
+
+    widget: a11y: Optimize text changes on scrolling with modifications
+    
+    In 036d337cb84c ("widget: a11y: Add missing text changes on scrolling
+    with modifications") we fixed text updates for the scroll+modification
+    case by updating the whole terminal. Updating the whole terminal however
+    makes Orca very talkative.
+    
+    This adds support for simple diff support for the common case: an ample head
+    and/or tail content is the same. This allows to emit only the modification,
+    which is usually relatively small.
+    
+    Fixes #88
+
+ src/vteaccess.cc | 216 +++++++++++++++++++++++++++++++------------------------
+ 1 file changed, 122 insertions(+), 94 deletions(-)
+
+commit 5b198b4458b71629c02be154f18f09877dbb02fc
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Sep 12 23:06:08 2023 +0200
+
+    widget: Fix conditional
+    
+    Fixes a regression from commit fb3220bee959d37f58daf702165f142ef9fab9f4.
+
+ src/vte.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit a1f82f92e39cd04d4428ea6f4820b908dc6fb808
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Sep 12 23:06:08 2023 +0200
+
+    widget: Fix conditional
+    
+    Fixes a regression from commit fb3220bee959d37f58daf702165f142ef9fab9f4,
+    which led to incorrect rendering with background transparency.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2646
+
+ src/vte.cc | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 7ab9ea28df7e63c7ae1644d6f73195a97b99620c
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Sep 3 22:15:35 2023 +0200
+
+    app: Correct option value description
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2645
+
+ src/app/app.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 2c063deaa49f82f581855fed400897355da240f4
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Sep 2 15:20:21 2023 +0200
+
+    Revert "widget: Do not count event as handled in more situations"
+    
+    This reverts commit 37455029c841826bac8fa52e99055c7af6d43633.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2643
+
+ src/vte.cc | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+commit 50b5fa0bbaadc54b63fa83a090a9fc56ddfb139f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Sep 2 15:19:00 2023 +0200
+
+    test: Add SGR 4:4 and 4:5 underlines to test script
+
+ perf/sgr-test.sh | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit e70bc5c012e29e59f17545efc57ac16e8ffa78c2
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Sep 2 15:19:00 2023 +0200
+
+    emulation: Ignore unknown SGR underline subparams
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2640
+
+ src/parser-glue.hh |  1 +
+ src/vteseq.cc      | 11 ++++++++---
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+commit 2066534d2ddda567e6cb1a81580ec7eb454dc7b1
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Aug 9 21:28:27 2023 +0200
+
+    widget: Correct "Since:" annotations
+
+ src/vte/vteenums.h |  2 +-
+ src/vtegtk.cc      | 24 ++++++++++++------------
+ 2 files changed, 13 insertions(+), 13 deletions(-)
+
+commit af411bcda0f4ab7cda9942c2224e7482eb4accd6
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Aug 9 21:28:27 2023 +0200
+
+    lib: Fix preallocated size
+
+ src/pastify.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit f179048efb4d95109c33398809ea807aa5ac8706
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 4 21:26:13 2023 +0200
+
+    build: Post branch version bump
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 9423831f79935828ce62365d4b6b93ff2758e15e
+Author: Zander Brown <zbrown@gnome.org>
+Date:   Fri Aug 4 21:10:39 2023 +0200
+
+    docs: Publish as gitlab pages
+    
+    Changes to developer.gnome.org means online documentation is no longer
+    automatically generated from tarballs, so instead create the docs from
+    CI when making a tag.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2545
+
+ .gitlab-ci.yml       | 52 ++++++++++++++++++++++++++++++++++
+ .gitlab-ci/docs.html | 79 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 131 insertions(+)
+
+commit 829a2c6aa9f43dba2d58cb0046980d1f235e3587
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 4 21:10:39 2023 +0200
+
+    Revert "widget: Modernise HTML output"
+    
+    This reverts commit edddaaea9d35011ed1c74a7caf75fe639ebddaa7.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2625
+
+ src/vte.cc | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 1bcf4bca8e5ba72b49ef2b756ea33b32adf5c28c
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Fri Aug 4 21:10:39 2023 +0200
+
+    pty: Fix exit delay in presence of a grandchild process
+    
+    When we notice that the child has quit, keep processing incoming data only as
+    long as there's data immediately available, and only up to a certain amount
+    which is presumably larger than the kernel's tty buffer size.
+    
+    This should be a more robust solution than the timeout-based one it replaces,
+    in order to consume all the data produced by the immediate child and then to
+    emit the child-exited signal without further delay.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2627
+
+ src/vte.cc         | 117 ++++++++++++++++++++++++++---------------------------
+ src/vteinternal.hh |   8 +---
+ 2 files changed, 59 insertions(+), 66 deletions(-)
+
+commit 036d337cb84c3ff3e62c688f3f0a2a2056eb15ca
+Author: Samuel Thibault <samuel.thibault@ens-lyon.org>
+Date:   Fri Aug 4 21:10:39 2023 +0200
+
+    widget: a11y: Add missing text changes on scrolling with modifications
+    
+    When vte_terminal_accessible_text_scrolled gets called, the terminal
+    might have not only scrolled, but also changed.  We thus have to check
+    whether the remaining text really is exactly the same as expected.  If
+    not, revert to updating the whole terminal.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/issues/88
+
+ src/vteaccess.cc | 159 ++++++++++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 129 insertions(+), 30 deletions(-)
+
+commit fb09294b614184dae787098afcca4520bbfe856f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 4 21:10:39 2023 +0200
+
+    build: Enable gtk4 by default
+
+ meson_options.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 37455029c841826bac8fa52e99055c7af6d43633
+Author: Carlos Garnacho <carlosg@gnome.org>
+Date:   Tue Aug 1 21:23:43 2023 +0200
+
+    widget: Do not count event as handled in more situations
+    
+    In order to play fair with other widgets/gestures along the event
+    propagation chain, and other external gestures that might be set
+    on the VTE widget (like the implicit GtkIMContext one for OSK
+    integration), let the terminal be more selective at letting
+    input events go through:
+    
+    - Feeding mouse events to applications only consumes the event
+      if something was actually sent.
+    
+    - If a button press does not reset or extend the selection, it
+      will be let through. Further motion may start a selection and
+      result on a later claiming of input.
+    
+      There is however a small behavioral change here, since the
+      unconsumed button presses being let through will also be more
+      eagerly attempted to be fed to the running application.
+    
+    - Button releases that did not result in an extended selection
+      will also be let through. This still observes extending the selection
+      with shift+click instead of dragging
+      (https://bugzilla.gnome.org/show_bug.cgi?id=683729)
+    
+    Altogether, the terminal widget gets better at not claiming input
+    for itself until something actually happened in it, letting non-effective
+    clicks go through, and coincidentally letting the implicit GtkIMContext
+    gesture pick these up.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2630
+
+ src/vte.cc | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+commit d17120696cbeb50b68f38b7af78ce1a28ed4c7cd
+Author: Carlos Garnacho <carlosg@gnome.org>
+Date:   Tue Aug 1 21:23:43 2023 +0200
+
+    widget: Do not possibly deny early click gesture
+    
+    Not claiming right away on button press doesn't mean that the
+    input from the gesture should be denied. There may be situations
+    where it only makes sense to claim later on, thus the gesture
+    should still remain in the initial undecided state.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2630
+
+ src/widget.cc | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+commit 726c9247142e20dabfbe73be10ac1d004e2e702a
+Author: David H. Gutteridge <gutteridge@pkgsrc.org>
+Date:   Sat Jul 22 21:55:03 2023 +0200
+
+    pty: Make netbsd workaround conditional on kernel version
+    
+    Only use the workaround of manually applying the cloexec and
+    nonblocking flags when running on an old kernel not supporting
+    these flags directly in the posix_openpty() call.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2575
+
+ src/pty.cc | 24 ++++++++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+commit 706e1de57c8b3c11f47541beb201770f336c13aa
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Jul 14 22:17:21 2023 +0200
+
+    emulation: Treat unsupported SGR 4:n as no-underline
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2640
+
+ src/parser-glue.hh | 21 +++++++++++++++++++++
+ src/vteseq.cc      |  2 +-
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+
+commit 461bc3e43c819fa0e3b62d0cf40ef533a69cc7f7
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Thu Jul 13 21:59:29 2023 +0200
+
+    widget: Invalidate ringview when the invalidating
+    
+    When the ringview is not invalidated when the ring has changed leads to
+    failed assertion aborts when handling events, e.g. vte#2636, vte#2637,
+    vte#2632, vte#2577.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2636
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2637
+
+ src/vte.cc | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+commit 092d8b8f1d15d3f841f1b93e052a677a73713690
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Jun 19 20:59:01 2023 +0200
+
+    widget: Fix introspection annotations
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2633#note_1772933
+
+ src/vtegtk.cc | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit dbb5e15ae66b9c4d11d8fed1800224ac46cbd634
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Jun 18 15:14:59 2023 +0200
+
+    widget: More docs and introspection annotation fixes
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2633#note_1771584
+
+ src/vtegtk.cc | 36 ++++++++++++++----------------------
+ 1 file changed, 14 insertions(+), 22 deletions(-)
+
+commit 22ee87447a1191b4be26bc69a566dd0f068c93ff
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Jun 18 00:37:20 2023 +0200
+
+    widget: Make get_text_range docs more accurate
+    
+    Document that passing a non-nullptr selection function will make this
+    function return nullptr.
+
+ src/vtegtk.cc | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+commit dce7b5f044b0f9e184f186315c846489a20edf0d
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Jun 1 21:30:48 2023 +0200
+
+    emulation: Fix infinite loop on non-number OSC 104 param
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2631
+
+ src/vteseq.cc | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+commit 7666d4763be31ceb673136ed09bb6fb7ccdfd48a
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sun Apr 23 21:50:38 2023 +0200
+
+    draw: Remove need to generate code
+    
+    Use user-defined string literals to move the box drawing data into the
+    source code, instead of having a separate text file that gets turned
+    into code from a generator.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2628
+
+ src/box-drawing.hh          | 863 ++++++++++++++++++++++++++++++++++++++++++++
+ src/box_drawing.txt         | 768 ---------------------------------------
+ src/box_drawing_generate.sh |  69 ----
+ src/meson.build             |  13 +-
+ src/minifont.cc             |   2 +-
+ 5 files changed, 865 insertions(+), 850 deletions(-)
+
+commit a50cfaa7cb76d7486a45869b948cbcb8239d2fba
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Apr 13 11:56:32 2023 +0200
+
+    widget: Fix compilation
+    
+    ... somehow the last commit was incompletely committer.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/7975
+
+ src/clipboard-gtk.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 587873b5cd4cedff259d32e37a37f11562f6dc11
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Apr 11 20:54:44 2023 +0200
+
+    widget: Fix setting clipboard with html data
+    
+    Fixes: https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/7975
+
+ src/clipboard-gtk.cc | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+commit 19acc51708d9e75ef2b314aa026467570e0bd8ee
+Author: Eric Johnson <yut23@gvljohnsons.com>
+Date:   Wed Apr 5 19:06:13 2023 +0200
+
+    emulation: Fix invalid mouse scroll event on window edge
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2621
+
+ src/vte.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 0cade2cf3713142e0fc606936066b840fc22287c
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Apr 5 19:06:13 2023 +0200
+
+    widget: Fix introspection warnings
+
+ src/vtegtk.cc | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 4da9d055f68f5b5dad9946b289a1836bd7c0fe8d
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Apr 5 19:06:13 2023 +0200
+
+    widget: Fix cursor blink timeout
+    
+    Fix s/ms confusion to make the cursor stop blinking correctly.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2622
+
+ src/vte.cc         | 30 ++++++++++++++++--------------
+ src/vteinternal.hh | 12 ++++++------
+ src/widget.cc      | 12 ++++++------
+ 3 files changed, 28 insertions(+), 26 deletions(-)
+
+commit 7fa3e6220de8aad9174e5976d73553a8073c6e4f
+Author: Alexander Shopov <ash@kambanaria.org>
+Date:   Fri Mar 31 10:11:16 2023 +0000
+
+    Update Bulgarian translation
+    
+    (cherry picked from commit 307a7363cbee8a84ed569bc07593721f9f7d10ae)
+
+ po/bg.po | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 3c8f66be867aca6656e4109ce880b6ea7431b895
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Mar 10 21:52:41 2023 +0100
+
+    fonts: Keep the PangoLayout unchanged
+    
+    The previous commit still wasn't completely fixing the problem, since
+    the FontInfo and the UnistrInfo are cached too, and m_layout will be
+    re-used when creating the next UnistrInfo, but the code in
+    pango_cairo_show_layout_line() requires the PangoLayout to still have
+    the same text as when it was created for the UnistrInfo.
+    
+    To fix this, adopt the PangoLayout into the PangoLayoutLine cached in
+    the UnistrInfo, and create a new layout for next use.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2606
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2620
+
+ src/fonts-pangocairo.cc | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+commit 22b3a562d5c95f5911560131c9f6f2df70881e34
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Thu Mar 9 13:47:23 2023 -0800
+
+    fonts: keep layout text available for cairo
+    
+    When a cairo recording surface is used, it will memcpy() the text and
+    therefore expects the layout's text to be complete enough to contain each
+    glyph item's offset from base pointer.
+    
+    This keeps that text around long enough to satisfy that requirement. It
+    will be reset on the next operation/call to get_unistr_info().
+    
+    Fixes #2620
+
+ src/fonts-pangocairo.cc | 11 +++--------
+ 1 file changed, 3 insertions(+), 8 deletions(-)
+
+commit fb3220bee959d37f58daf702165f142ef9fab9f4
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Mar 8 20:36:48 2023 +0100
+
+    all: Use defined values for defines
+    
+    ... instead of defined/undefined names, so that -Wundef can catch
+    mistakes.
+
+ meson.build             | 16 +++++++-------
+ src/app/app.cc          |  4 ++--
+ src/bidi.cc             | 14 ++++++-------
+ src/bidi.hh             |  4 ++--
+ src/cxx-utils.hh        |  2 +-
+ src/debug.cc            |  8 +++----
+ src/debug.h             |  4 ++--
+ src/decoder-cat.cc      | 12 +++++------
+ src/fonts-pangocairo.cc |  8 +++----
+ src/fonts-pangocairo.hh |  2 +-
+ src/glib-glue.cc        |  8 +++----
+ src/glib-glue.hh        |  8 +++----
+ src/keymap.cc           |  2 +-
+ src/missing.cc          |  6 +++---
+ src/missing.hh          |  6 +++---
+ src/parser-cat.cc       | 38 ++++++++++++++++-----------------
+ src/pty.cc              |  2 +-
+ src/reflect.c           |  4 ++--
+ src/ring.cc             | 20 +++++++++---------
+ src/ring.hh             |  6 +++---
+ src/sixel-context.cc    |  4 ++--
+ src/spawn.cc            |  6 +++---
+ src/vte.cc              | 56 ++++++++++++++++++++++++-------------------------
+ src/vtegtk.cc           | 46 +++++++++++++++++++---------------------
+ src/vteinternal.hh      | 29 +++++++++++++------------
+ src/vteseq.cc           | 12 +++++------
+ src/vtestream-file.h    | 16 +++++++-------
+ src/vtetypes.cc         | 10 ++++-----
+ src/vtetypes.hh         |  2 +-
+ src/widget.cc           |  2 +-
+ 30 files changed, 177 insertions(+), 180 deletions(-)
+
+commit 75543c3b30dbf696b084e927dabbf52a41d32638
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Mar 8 20:36:47 2023 +0100
+
+    all: Use __has_include
+    
+    ... instead of checking for header presence from meson.build.
+
+ meson.build      | 21 ---------------------
+ src/dumpkeys.c   |  7 ++++---
+ src/mev.c        |  2 +-
+ src/missing.cc   |  3 ++-
+ src/pty.cc       |  9 +++++----
+ src/vte.cc       | 12 +++++++-----
+ src/vteaccess.cc |  2 +-
+ src/vtegtk.cc    |  2 +-
+ src/vteseq.cc    |  2 +-
+ 9 files changed, 22 insertions(+), 38 deletions(-)
+
+commit bd4f781d168859eb42943a23487422224124467c
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Mar 8 20:36:47 2023 +0100
+
+    fonts: Don't declare this inline
+
+ src/fonts-pangocairo.cc | 2 ++
+ src/fonts-pangocairo.hh | 3 ---
+ 2 files changed, 2 insertions(+), 3 deletions(-)
+
+commit 9b41cd1014299d01111b64b705f013e28398821a
+Author: Khem Raj <raj.khem@gmail.com>
+Date:   Thu Mar 2 22:57:00 2023 +0100
+
+    pty: Do not typecast to GSpawnFlags
+    
+    GSpawnFlags is enum with max value 1 << 15 which means it fits into
+    a short, however here we are oring VTE_SPAWN_* as well which have
+    higher values (by design).  This fixes a compile error on clang 16
+    with the -Wenum-constexpr-conversion flag.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2618
+
+ src/vtepty.cc | 24 ++++++++++++------------
+ 1 file changed, 12 insertions(+), 12 deletions(-)
+
+commit 0677e390b5ddb4b70fe75185cbfe8210ee096a7b
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Feb 28 18:34:05 2023 +0100
+
+    fonts: Remove unnecessary context change call
+    
+    Calling pango_context_changed() is not necessary here; all changes
+    to the context done above this have already done that.
+
+ src/fonts-pangocairo.cc | 2 --
+ 1 file changed, 2 deletions(-)
+
+commit 241df48d93dbefc1559a6a4e7cea8e60735661d8
+Author: Calvin Walton <calvin.walton@kepstin.ca>
+Date:   Tue Feb 28 18:34:05 2023 +0100
+
+    widget: Add API to override font options
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2573
+
+ meson.build             | 18 ++++++-----
+ src/drawing-cairo.cc    |  9 +++---
+ src/drawing-cairo.hh    |  1 +
+ src/fonts-pangocairo.cc | 58 +++++++++++++++++++++++------------
+ src/fonts-pangocairo.hh |  8 +++--
+ src/meson.build         |  2 ++
+ src/vte.cc              | 18 +++++++++++
+ src/vte/vteterminal.h   |  7 +++++
+ src/vtegtk.cc           | 81 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ src/vtegtk.hh           |  1 +
+ src/vteinternal.hh      |  3 ++
+ 11 files changed, 172 insertions(+), 34 deletions(-)
+
+commit c8baa84d8cdfe9be774e8dbf62426348025df699
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Feb 28 18:34:05 2023 +0100
+
+    widget: Fix a deprecation warning
+
+ meson.build          | 2 +-
+ src/clipboard-gtk.cc | 2 ++
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+commit e343088f9d02be69c2ff377566b942553e6e21fd
+Author: Calvin Walton <calvin.walton@kepstin.ca>
+Date:   Tue Feb 28 18:34:05 2023 +0100
+
+    widget: gtk4: Hint and quantize font metrics
+    
+    With gtk4, the font metrics are unhinted by default. This causes
+    problems when measuring the font, since the width or height may
+    have fractional pixel values that get rounded up - resulting in
+    vte using integer cell sizes that are larger than would be
+    appropriate for the font - the usual side-effect is that horizontal
+    letter spacing looks too wide.
+    
+    To fix this, set the cairo font option to hint vertical metrics,
+    which will result in the glyph ascent and descent values both being
+    integers.
+    
+    Also make pango round glyph positions, so that the horizontal advance
+    of the glyphs will be integers appropirate for a renderer that doesn't
+    do sub-pixel glyph positioning.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2573
+
+ src/cairo-glue.hh       |  1 +
+ src/fonts-pangocairo.cc | 40 ++++++++++++++++++++++++++++++++--------
+ 2 files changed, 33 insertions(+), 8 deletions(-)
+
+commit e8dcb5e0187f10dce9bdc67af66cff31f8dc630b
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Feb 24 18:54:12 2023 +0100
+
+    widget: Fix introspection API
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2617
+
+ src/vtegtk.cc | 1 +
+ 1 file changed, 1 insertion(+)
+
+commit b92e9dc90841b6401707143122d05c9088720b5c
+Author: Sabri Ünal <libreajans@gmail.com>
+Date:   Wed Feb 22 11:51:27 2023 +0000
+
+    Update Turkish translation
+
+ po/tr.po | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+commit abb7afd06c64769ff8754d2d82edd660cee16c64
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Feb 11 19:10:09 2023 +0100
+
+    build: More detailed version info
+
+ meson.build | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+commit dcfc0ec44df3084987a6faa0fdc03e6de717c682
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Feb 11 19:00:05 2023 +0100
+
+    widget: Ensure the ringview is updated before converting coordinates
+    
+    When checking event coordinates, make sure the ringview is updated
+    first, before converting the coordinates to grid coordinates.
+    
+    This should fix the top crash on retrace.fedora.org for all vte-based
+    terminals (gnome-terminal, gnome-console, etc.).
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2577
+
+ src/vte.cc | 70 +++++++++++++++++++++++++++++++++++++++++++++++---------------
+ 1 file changed, 53 insertions(+), 17 deletions(-)
+
+commit 39ae174a159a5c50f250ad7547b056ea0a49859a
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Feb 3 21:52:20 2023 +0100
+
+    widget: Update some Since annotations
+
+ src/vtegtk.cc | 24 ++++++++++++------------
+ 1 file changed, 12 insertions(+), 12 deletions(-)
+
+commit aa7689792918a9d4054e367139d166b146a5bd22
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Feb 3 21:45:46 2023 +0100
+
+    build: Post branch version bump
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 1d1896427fb28b0aa32f5dd401f2a86e97452cf1
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Jan 21 10:24:38 2023 +0100
+
+    widget: gtk4: Translate control+key events when using multiple layouts
+    
+    Same as for gtk3.
+    
+    https://gitlab.gnome.org/GNOME/gtk/-/issues/5384
+
+ src/widget.cc | 31 ++++++++++++++++++++++++++++---
+ 1 file changed, 28 insertions(+), 3 deletions(-)
+
+commit 015ca4d2fdc57b625add7b23b0afa7193adc45a9
+Author: Martin Kühl <martin.kuehl@posteo.net>
+Date:   Fri Dec 30 20:07:49 2022 +0100
+
+    widget: Use correct end row for getting the selected text
+    
+    The range is end-exclusive, so use end_row() instead of last_row().
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2584
+
+ src/vtegtk.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 2ee2495486e3266ab0037daad0b1cf220bd254b0
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Dec 20 22:11:56 2022 +0100
+
+    widget: Add API to get text as HTML
+    
+    Based on a patch by Lex Bailey <gitcommit@lexbailey.me>.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2589
+
+ src/glib-glue.hh      |  16 ++++++
+ src/vte/vteterminal.h |  17 +++++-
+ src/vtegtk.cc         | 147 ++++++++++++++++++++++++++++++++++++++++++--------
+ 3 files changed, 156 insertions(+), 24 deletions(-)
+
+commit 8d74fb84e2031a5f3373ef07f7862b0e49966a87
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Dec 20 22:11:56 2022 +0100
+
+    parser: Add more OSC codes
+
+ src/parser-osc.hh | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit a36843510ae24b4687840efd4f03afa6bac0bafe
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Dec 20 22:11:56 2022 +0100
+
+    widget: clipboard: Add missing else
+
+ src/clipboard-gtk.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit bdb309bd0470fd5780039e72868e949291cc2791
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Dec 20 22:11:55 2022 +0100
+
+    parser: modes: Mark modes that should not be reset by DECSTR
+
+ src/modes.py | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+commit eaf5d30427bfc60f2a5eedd44d97062d57a76042
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Dec 20 22:11:55 2022 +0100
+
+    parser: Update list of known OSC codes
+    
+    ... with new codes from xterm master.
+
+ src/parser-osc.hh | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit adc5e8fa46cd328354570738aeb3418562b7695e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Nov 29 22:17:36 2022 +0100
+
+    pty: Remove useless setenv calls
+    
+    Spawning will always provide its own envp which will replace the
+    environment when execve()ing.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/271
+
+ src/pty.cc | 9 ---------
+ 1 file changed, 9 deletions(-)
+
+commit c6ad5731719ca21ba2fbe6edc63da47916dc056f
+Author: Vasil Pupkin <3abac@3a.by>
+Date:   Sun Nov 27 20:27:12 2022 +0000
+
+    Update Belarusian translation
+
+ po/be.po | 77 +++++++++++++++++++++++++++-------------------------------------
+ 1 file changed, 32 insertions(+), 45 deletions(-)
+
+commit edddaaea9d35011ed1c74a7caf75fe639ebddaa7
+Author: Noa <coolreader18@gmail.com>
+Date:   Wed Nov 16 20:39:44 2022 +0100
+
+    widget: Modernise HTML output
+    
+    Use <span> instead of <font> for copy-as-html functionality
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2604
+
+ src/vte.cc | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 61e705bbd9d92670cca7a8519b62133033791936
+Author: Matthew Rose <mattrose@folkwolf.net>
+Date:   Wed Nov 16 20:35:22 2022 +0100
+
+    missing: Add better fdwalk implementation for darawin
+    
+    Port of glib!3040 to vte.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2602
+
+ src/missing.cc | 35 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+commit fc3c7b4358cdfacec0285a84971a27b17b7498b5
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Nov 15 00:31:51 2022 +0100
+
+    build: Print warning on unstable release
+
+ meson.build | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+commit 862561bcbd1547783aca0c56d799cadc087bb2b5
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Nov 15 00:31:51 2022 +0100
+
+    build: Add define for openbsd
+
+ meson.build | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+commit 8ef3f6b2f8043d28cbc82520eb094f09333b26ae
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Sep 23 16:24:57 2022 +0200
+
+    build: Add define for darwin
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2592
+
+ meson.build | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+commit e0675c6533c23c0bdda6531617428cdfe5979ad9
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Sep 23 16:24:57 2022 +0200
+
+    build: Fix netbsd define
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit c735479b7542b938bfb9709860fff58c5ca9fe6f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Sep 21 22:13:53 2022 +0200
+
+    app: Disconnect signal handlers on dispose
+    
+    Fixes two critical warnings when closing a window with the close button.
+
+ src/app/app.cc | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+commit 3cffe18b25a4c04e9ee0c7e090f349805d43c680
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Sep 21 22:13:53 2022 +0200
+
+    lib: Add gresources to vte/gtk4
+
+ src/meson.build            | 13 ++++++++++++-
+ src/vte-gtk4.gresource.xml | 21 +++++++++++++++++++++
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+
+commit 391cd322f0c176d052da5417d3e372cf861c5b06
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Sep 20 21:39:11 2022 +0200
+
+    app: Filter unwanted environment variables
+
+ src/app/app.cc | 85 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 83 insertions(+), 2 deletions(-)
+
+commit 9dbae321af881924b5cae245b3d956497e088437
+Author: Sabri Ünal <libreajans@gmail.com>
+Date:   Sun Sep 18 15:21:38 2022 +0000
+
+    Update Turkish translation
+
+ po/tr.po | 94 ++++++++--------------------------------------------------------
+ 1 file changed, 11 insertions(+), 83 deletions(-)
+
+commit bcf5c975e76e585dc5f0cf3dbc5e7a057c3af183
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Sep 18 13:02:32 2022 +0200
+
+    pty: netbsd fix
+    
+    On netbsd, posix_openpt() accepts O_NONBLOCK | O_CLOEXEC, but silently
+    ignores them, so they need to be applied explicitly afterwards.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2575
+
+ src/pty.cc | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+commit 10f7d7ecf0b9939e264c12c0ec625db66b0d606a
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Sep 18 13:02:32 2022 +0200
+
+    build: Update meson req version
+
+ meson.build | 12 ++++--------
+ 1 file changed, 4 insertions(+), 8 deletions(-)
+
+commit fb604fe287abf64645a83ef27e2c05da14fbbae0
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Sep 5 00:03:52 2022 +0200
+
+    widget: Fix value type check
+
+ src/clipboard-gtk.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 7bc143b3e540aa1a6a07dbad45d6caf8c0755a7e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Sep 1 18:34:03 2022 +0200
+
+    widget: Clipboard fixes for gtk4
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2557
+
+ src/clipboard-gtk.cc | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+commit e4d500a302db008063f11fd95a984ed28b9d61f3
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Sep 1 18:34:03 2022 +0200
+
+    widget: Offer text/html also in UTF-8 format
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2527
+
+ src/clipboard-gtk.cc | 63 ++++++++++++++++++++++++++++++++++------------------
+ 1 file changed, 42 insertions(+), 21 deletions(-)
+
+commit b72b397be45045bc5464ba8ed889f6fb2b39989a
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Sep 1 18:34:03 2022 +0200
+
+    widget: Implement clipboard for gtk4
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2557
+
+ src/clipboard-gtk.cc | 536 ++++++++++++++++++++++++++++++++++++++++++++++++---
+ src/clipboard-gtk.hh |  15 +-
+ src/glib-glue.hh     |   1 +
+ src/gtk-glue.hh      |   1 +
+ src/vte.cc           |   4 +-
+ src/widget.cc        |   5 +-
+ src/widget.hh        |   3 +-
+ 7 files changed, 530 insertions(+), 35 deletions(-)
+
+commit fd6d6226272cda3e8c4d4a58e84c796656264566
+Author: Alexander Mikhaylenko <alexm@gnome.org>
+Date:   Thu Sep 1 05:13:53 2022 +0400
+
+    widget: Fix Widget::regex_match_check_at()
+    
+    It was calling Terminal::regex_match_check() instead of
+    Terminal::regex_match_check_at().
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2578
+
+ src/widget.hh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit b4abc09b0950e2b1593782116b7fa9fc2e7ffba1
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 19 00:03:13 2022 +0200
+
+    lib: Fix spawning on netbsd
+    
+    Add netbsd to the platforms that can safely use sysconf(3) to close the
+    file descriptors before exec, since according to netbsd's man:sigaction(2),
+    sysconf(3) is async-signal-safe.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2574
+
+ src/missing.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 1b750a348afb4085786e86fe80ac73caad1b829a
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Aug 16 17:03:33 2022 +0200
+
+    widget: Use correct view coordinates
+    
+    The conversion needs to take the border into account.
+
+ src/vte.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+commit 70366d113516382038c69f863c9915753041e563
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Aug 9 21:08:06 2022 +0200
+
+    widget: gtk4: Only notify terminal when focused
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2555#note_1524795
+
+ src/widget.cc | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+commit d7b1da6f8203a732fdc850b991236708adc0d52f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Aug 9 21:08:06 2022 +0200
+
+    widget: gtk4: Don't grab the focus on focus-in
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2555
+
+ src/vte.cc | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit b51cc92ccae2b37ff6bb0acb8bf0a8dca19b3731
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 5 21:24:01 2022 +0200
+
+    build: Post branch version bump
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit b804dec1990b4c880bb302b2862bf920bc2a11f7
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 5 21:18:25 2022 +0200
+
+    build: Update gtk3 req version
+    
+    Commit 5147453115f46d2dc91b797cd12f2ede220ea100 introduced a dependency
+    on gtk 3.24, so update the req, min and max versions.
+
+ meson.build | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 20d83ba052c94c0030f2964e1cbad7b012af81a2
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 5 21:11:18 2022 +0200
+
+    build: Remove gtk4 notice
+    
+    While not completely stable yet, it's no longer experimental.
+
+ meson.build | 4 ----
+ 1 file changed, 4 deletions(-)
+
+commit 84e4bccac4563af107a1c0a31fcb509ee4fa7032
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 5 21:04:10 2022 +0200
+
+    Revert "emulation: Support XTVERSION sequence"
+    
+    This reverts commit 0718a9a7f9300b2526eddb0fc74e25eef34795ba.
+    
+    Issue #235 shows commiting this was premature and there's more discussion needed.
+
+ src/parser-reply.hh |  1 -
+ src/parser-seq.py   |  2 --
+ src/vteseq.cc       | 32 ++------------------------------
+ 3 files changed, 2 insertions(+), 33 deletions(-)
+
+commit 6eb98158c704eb9919bc324174c1f1147086f6ac
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 5 21:04:10 2022 +0200
+
+    widget: Correct some Since annotations
+
+ src/vtegtk.cc | 30 +++++++++++++++---------------
+ 1 file changed, 15 insertions(+), 15 deletions(-)
+
+commit 2f255b2045fe5571c80fc9ded70af7f144ac839b
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Aug 5 21:04:10 2022 +0200
+
+    build: Build fix for netbsd
+    
+    Define _NETBSD_SOURCE to get all necessary defines exposed, as found
+    from a patch in netbsd ports.
+
+ meson.build | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+commit a07cfcde3e595084ebc72c96c41857bf05c4c668
+Author: Alexander Mikhaylenko <alexm@gnome.org>
+Date:   Thu Aug 4 20:04:25 2022 +0400
+
+    widget: Only avoid reentrant queue_resize() in GTK4
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2572
+
+ src/vte.cc | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+commit 5d732ad6f6f377e31260ae18dbc24d44f3a587e8
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Aug 3 22:58:02 2022 +0200
+
+    widget: Listen for toplevel focus change
+    
+    Update the cursor state when the toplevel focus changes.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2555
+
+ src/vte.cc         | 9 ---------
+ src/vteinternal.hh | 1 -
+ src/widget.cc      | 5 ++++-
+ 3 files changed, 4 insertions(+), 11 deletions(-)
+
+commit d46756b89cfbb61929812ca2bd1d8c13a9504044
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Aug 3 22:58:02 2022 +0200
+
+    widget: Listen for toplevel focus change
+    
+    Need to listen to notify::state on the toplevel the widget is in, so
+    as to generate the correct focus notifications (DECSET 1004).
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2555
+
+ src/vte.cc         |   9 +++++
+ src/vteinternal.hh |   1 +
+ src/widget.cc      | 113 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/widget.hh      |  12 ++++++
+ 4 files changed, 135 insertions(+)
+
+commit 901558bf471299e483976770e062730f35c13414
+Author: Jeremy Bicha <jeremy.bicha@canonical.com>
+Date:   Fri Jul 29 22:23:50 2022 +0200
+
+    docs: Install toml file to subdir
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2570
+
+ doc/reference/meson.build | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 08d71a30d4feb8596a9ca3b39ab1c73bc6ecff10
+Author: Alexander Mikhaylenko <alexm@gnome.org>
+Date:   Wed Jul 27 15:42:47 2022 +0400
+
+    widget: Don't queue_resize() during allocation
+    
+    This is not allowed, and while here it mostly works by accident, it's
+    possible to break it - for example, if it resizes while unmapped.
+    
+    See https://gitlab.gnome.org/GNOME/console/-/merge_requests/102#note_1510384
+
+ src/vte.cc         | 16 ++++++++++------
+ src/vtegtk.cc      |  2 +-
+ src/vteinternal.hh |  3 ++-
+ 3 files changed, 13 insertions(+), 8 deletions(-)
+
+commit 2d165b61f527472a7a7eccee3e94f8ec96690245
+Author: Alexander Mikhaylenko <alexm@gnome.org>
+Date:   Mon Jul 25 22:25:08 2022 +0200
+
+    widget: gtk4: Don't invalidate endlessly
+    
+    Have early returns to skip invalidation like in the gtk3 codepath.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2566
+
+ src/vte.cc | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+commit 6beb9246d84d3161e1ea377417d0a2b9a8fb1e90
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Jul 25 22:25:08 2022 +0200
+
+    widget: gtk4: Lower the priority of the style provider
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2567
+
+ src/vtegtk.cc | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+commit 409cc91b95c21f83b1978796495ee8dfcfd42dfd
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Jul 24 15:20:18 2022 +0200
+
+    widget: gtk: Make new API naming self-consistent
+
+ src/vte/vteterminal.h |  8 ++++----
+ src/vtegtk.cc         | 18 +++++++++---------
+ 2 files changed, 13 insertions(+), 13 deletions(-)
+
+commit 0effa40fd9520e7e9af83d5a26d0d7be58b4094e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Jul 24 14:45:57 2022 +0200
+
+    widget: gtk4: Add API to check event context
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2530
+
+ src/vte.cc            |  33 +++++++++
+ src/vte/vteterminal.h |  33 +++++++++
+ src/vtegtk.cc         | 183 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/vteinternal.hh    |  20 +++---
+ src/widget.hh         |  27 ++++++++
+ 5 files changed, 288 insertions(+), 8 deletions(-)
+
+commit 011b7acc60b71ea4762544ee72d106c3bccfa131
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Jul 22 21:39:12 2022 +0200
+
+    widget: gtk4: Make background API available on gtk4
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/12#note_1506942
+
+ src/vte/vteterminal.h | 4 ----
+ src/vtegtk.cc         | 4 ----
+ 2 files changed, 8 deletions(-)
+
+commit 93e3d17cbb45b636a298d27a9af223a4e405382e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Jul 22 21:39:12 2022 +0200
+
+    widget: Add format arg to new API to get selected text
+
+ src/vte/vteterminal.h |  3 ++-
+ src/vtegtk.cc         | 12 +++++++++---
+ 2 files changed, 11 insertions(+), 4 deletions(-)
+
+commit 0a663194fc1d4c9f5c2f952f6ccfea8a8a4719f7
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Jul 13 21:14:31 2022 +0200
+
+    build: Post release version bump
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit d4754ba9e4394d4e02af72e548060aadbe431f5b (tag: 0.69.90)
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Jul 13 21:10:01 2022 +0200
+
+    build: Version 0.69.90
+    
+    Release required for gnome 43α.
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 3ed53bfaa7344ce5b7727a60a2d33315b15201e5
+Author: Jamie Murphy <hello@jamiethalacker.dev>
+Date:   Sun Jul 3 21:48:03 2022 +0200
+
+    widget: Add API to get selected text
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2563
+
+ src/vte/vteterminal.h |  3 +++
+ src/vtegtk.cc         | 32 ++++++++++++++++++++++++++++++++
+ 2 files changed, 35 insertions(+)
+
+commit 0372107ad01e84912ac6c4806f4b6b1c47d8634b
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Jun 25 20:37:29 2022 +0200
+
+    build: Make sure __BSD_VISIBLE is defined on freebsd
+    
+    By not defining any of the other feature macros, it *should* enable all
+    of them.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2564
+
+ meson.build | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+commit 9daa0f24da191a52e1344148ac3c0c5dcf20a6b6
+Author: Zurab Kargareteli <zuraxt@gmail.com>
+Date:   Sat Jun 25 07:22:11 2022 +0000
+
+    Update Georgian translation
+
+ po/ka.po | 141 +++++++++++++++++++--------------------------------------------
+ 1 file changed, 41 insertions(+), 100 deletions(-)
+
+commit c033d7583ec6d565e5a4be902cca1e1c882e07a7
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Jun 24 22:11:13 2022 +0200
+
+    build: Define __BSD_VISIBLE on freebsd
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2564#note_1485997
+
+ meson.build | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+commit bd65f62bb4eb9329b51b4665ab2abefbc4f5ff81
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Jun 24 22:11:13 2022 +0200
+
+    all: Include <termios.h> directly
+    
+    <sys/termios.h> is just a deprecated way to include <termios.h> anyway.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2564
+
+ meson.build    | 1 -
+ src/dumpkeys.c | 7 +------
+ src/mev.c      | 5 -----
+ src/pty.cc     | 5 -----
+ src/vte.cc     | 5 ++---
+ 5 files changed, 3 insertions(+), 20 deletions(-)
+
+commit 554690e7b3dcbbbf405f7600799da48e920c9024
+Author: Zander Brown <zbrown@gnome.org>
+Date:   Thu Jun 23 21:30:57 2022 +0200
+
+    glib: glue: Include string
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2564
+
+ src/glib-glue.cc | 1 +
+ 1 file changed, 1 insertion(+)
+
+commit 8de26d1ea368d762a30d682da29df28935244cb2
+Author: Zander Brown <zbrown@gnome.org>
+Date:   Wed Jun 22 20:04:47 2022 +0200
+
+    glib: glue: Include string_view
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2564
+
+ src/glib-glue.cc | 1 +
+ 1 file changed, 1 insertion(+)
+
+commit 67755af670ed1e560d34a441ea30eb4446ca3671
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Jun 22 00:20:56 2022 +0200
+
+    build: Define list of libc feature test macros only once
+
+ meson.build | 26 ++++++++++++++++----------
+ 1 file changed, 16 insertions(+), 10 deletions(-)
+
+commit 0c949a6b9a8874cdafa56f64bd8650d7b9349133
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Jun 21 23:56:22 2022 +0200
+
+    lib: Fix reserved size calculation
+
+ src/pastify.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 1cce95426d442f5af0d7ed684debf9389323591f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Jun 21 23:52:35 2022 +0200
+
+    build: Bump meson req version to 0.51
+    
+    ... since we already uses feature from that version.
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 8b75bf6220ea53d738911090a97125a5671f3de9
+Author: Zander Brown <zbrown@gnome.org>
+Date:   Tue Jun 21 23:52:35 2022 +0200
+
+    build: Use an explict python interpreter
+    
+    Add the python interpreter explicitly to the custom_target's command,
+    so that it runs them with that python instead of the environment's.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/350
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2564
+
+ src/meson.build | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 7fb4e9a75d9a521079a55c976ad4d115cd7b03e4
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Jun 21 23:18:55 2022 +0200
+
+    build: Check for python version
+
+ meson.build | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+commit 8f53192432560e61b6c0de3692de44c245c40e55
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Jun 21 22:55:21 2022 +0200
+
+    build: Also set _XOPEN_SOURCE
+    
+    This is necessary on e.g. freebsd to use grantpt().
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2564
+
+ meson.build | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+commit b51feeca889d4b597e95b21bc77dc078892af11d
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon May 9 20:17:48 2022 +0200
+
+    widget: gtk4: Simplify invalidation tracking
+    
+    We can't invalidate regions of the widget on gtk4 and so always
+    invalidate everything anyway, so remove the update rect tracking.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2562
+
+ src/vte.cc         | 30 +++++++++++++++++++++++++-----
+ src/vteinternal.hh |  2 ++
+ 2 files changed, 27 insertions(+), 5 deletions(-)
+
+commit 4628822dbc45be6444fb11719bc955a630f5fbb1
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue May 3 21:57:58 2022 +0200
+
+    docs: Port to gi-docgen
+    
+    This greatly simplifies building the documentation for both vte/gtk3 and
+    vte/gtk4.
+
+ doc/reference/vte-gtk3.toml.in | 54 ++++++++++++++++++++++++++++++++++++++
+ doc/reference/vte-gtk4.toml.in | 59 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 113 insertions(+)
+
+commit 0f7a2ff5b87a40b28f3c340a40ed9ff7ecad459b
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue May 3 21:57:58 2022 +0200
+
+    docs: Port to gi-docgen
+    
+    This greatly simplifies building the documentation for both vte/gtk3 and
+    vte/gtk4.
+
+ Makefile.meson                     |   4 +-
+ doc/reference/Makefile.docs        | 520 -------------------------------------
+ doc/reference/gtk3/meson.build     |  55 ----
+ doc/reference/gtk4/meson.build     |  55 ----
+ doc/reference/licence.md           |  27 ++
+ doc/reference/meson.build          |  87 ++++++-
+ doc/reference/vte-docs.xml         | 182 -------------
+ doc/reference/vte-overrides.txt.in |   0
+ doc/reference/vte-sections.txt.in  | 281 --------------------
+ doc/reference/vte.types.in         |  17 --
+ meson.build                        |   4 -
+ 11 files changed, 106 insertions(+), 1126 deletions(-)
+
+commit 5147453115f46d2dc91b797cd12f2ede220ea100
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue May 3 21:03:54 2022 +0200
+
+    widget: Ignore synthetic scroll events
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2561
+
+ src/widget.cc | 27 ++++++++++++++++++---------
+ src/widget.hh |  2 +-
+ 2 files changed, 19 insertions(+), 10 deletions(-)
+
+commit 1398ac862fb10b3cb7cdfc8267be2df5d5f39eb5
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Apr 20 20:26:06 2022 +0200
+
+    fonts: gtk4: Create a new pango context
+    
+    Don't use the widget's pango context, since it may contain weird font
+    description and attributes.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2558
+
+ src/fonts-pangocairo.cc | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+commit 820bb7ba14f996d0f93172ccd37accb48be36054
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Apr 20 20:26:06 2022 +0200
+
+    fonts: Pass nullptr for language
+    
+    No need to re-set the context's language to its current value.
+
+ src/fonts-pangocairo.cc | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+commit 01647f9aa8891cf2ef0b524edb19d8c18730dd98
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Apr 20 20:26:06 2022 +0200
+
+    fonts: Only set language if different to the current language
+
+ src/fonts-pangocairo.cc | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+commit 17024047b06f72ad6cd431b200bd710d11ffd268
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Apr 18 19:39:01 2022 +0200
+
+    widget: Fix padding borders
+    
+    On gtk3, the padding needs to be added to the widget's size request, and
+    is inside its allocation, while on gtk4, the padding is outside the
+    widget's allocation.  The inner padding (use to [xy]align and [xy]fill
+    properties) is always inside the allocation.
+    
+    Also fixes event coordinate translation on gtk4 to take the inner border
+    into account.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2554
+
+ src/vte.cc         | 239 +++++++++++++++++++++++++++++++++++------------------
+ src/vteaccess.cc   |   4 +-
+ src/vtegtk.cc      |   4 +-
+ src/vteinternal.hh |  35 +++++---
+ src/widget.cc      |  54 +++++-------
+ src/widget.hh      |   6 +-
+ 6 files changed, 207 insertions(+), 135 deletions(-)
+
+commit 8c4b920cba056d1100a15eae5f4aa02c92452dcb
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Apr 18 19:39:01 2022 +0200
+
+    build: Try to fix pwrite detection on non-glibc systems
+    
+    Define _POSIX_C_SOURCE for POSIX 2008.
+
+ meson.build | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+commit e53cd45100848bfe782dbc5c4bf47ca94c46ec16
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Apr 12 22:02:49 2022 +0200
+
+    app: Don't override widget's CSS names
+    
+    Setting a different CSS name makes the VteTerminal builtin CSS not
+    apply.
+    
+    Related to #2554.
+
+ src/app/app.cc | 5 -----
+ 1 file changed, 5 deletions(-)
+
+commit bbd3f97b7d40988f4a9ed1e4e8723537b3836dd0
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Apr 11 22:47:48 2022 +0200
+
+    widget: Queue a resize on CSS changes
+    
+    Suggested by Christian Hergert in #2554.
+
+ src/widget.cc | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+commit af8f53aae88aa09890d4baed7ed718f81e6489d7
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Apr 11 22:47:48 2022 +0200
+
+    widget: Remove errneous gtk_widget_allocate call
+    
+    This breaks widget positioning, and isn't necessary in any case. Noticed
+    by Christian Hergert in #2554.
+
+ src/widget.cc | 2 --
+ 1 file changed, 2 deletions(-)
+
+commit 254416436fe346ffc23fb4bb79460f7fdb60171e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Apr 8 21:50:18 2022 +0200
+
+    bindings: vala: Add vapi for vte/gtk4
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2546
+
+ bindings/meson.build      |  2 +-
+ bindings/vala/meson.build | 85 +++++++++++++----------------------------------
+ 2 files changed, 24 insertions(+), 63 deletions(-)
+
+commit 9a3769b22da64a040f8ab306f25cecc3e25e2305
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Apr 8 21:50:18 2022 +0200
+
+    bindings: vala: Remove the test app
+    
+    It only existed anymore to test that comping a vala programme with the
+    vte vapi works, but it's been broken by vala changes a couple of times,
+    and also is too much work to port to gtk4.  So just remove it.
+
+ bindings/vala/app.gresource.xml |   23 -
+ bindings/vala/app.ui            |  152 ------
+ bindings/vala/app.vala          | 1099 ---------------------------------------
+ bindings/vala/config.vapi       |    5 -
+ bindings/vala/search-popover.ui |  249 ---------
+ 5 files changed, 1528 deletions(-)
+
+commit 16e65aa7bea7b5781248be6fa904e3ee1077efdc
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Apr 8 21:38:50 2022 +0200
+
+    bindings: gir: Change vte/gtk4 gir nsversion
+    
+    The previous scheme of prepending a '4' proved to be problemativ, see
+    issue 2550.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2550
+
+ bindings/gir/meson.build | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 6a80bec4bf7a1e52057c03d2c73cce1bf248c6d7
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Mar 3 23:25:51 2022 +0100
+
+    build: Fix debug build
+    
+    Add missing sources for the test.
+
+ src/meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit b433a647fde406d059e5fbf48ba47b847c136917
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Mar 1 23:08:53 2022 +0100
+
+    build: Fix debug build
+    
+    Add missing sources for the test app.
+
+ src/app/meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 7a0a7f3c5dd1b9c798bfa0f1f0a13661167f54a3
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Mar 1 21:12:12 2022 +0100
+
+    lib: Move glib glue code to glib-glue.cc
+
+ src/glib-glue.cc | 180 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/meson.build  |   1 +
+ src/vtegtk.cc    | 145 --------------------------------------------
+ 3 files changed, 181 insertions(+), 145 deletions(-)
+
+commit 5770e39b5a908952237bc8288e5342eb08c1d5bb
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Feb 28 17:37:43 2022 +0100
+
+    spawn: Fix build without CLOSE_RANGE_CLOEXEC
+    
+    Only call close_range() when CLOSE_RANGE_CLOEXEC is defined.
+    Fixes the build on non-linux.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2544
+
+ src/spawn.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit f4b915aea367d407f8ac527e1aed9425b8cea9e2
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Feb 12 19:19:40 2022 +0100
+
+    build: Post branch version bump
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit b70729f508d11abf9a7c2ccb5f1cd675e465f954
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Feb 11 19:03:16 2022 +0100
+
+    widget: Fix some API version tags
+    
+    The alignment API was deferred to 0.70, so correct the Since: tags.
+
+ src/vtegtk.cc | 24 ++++++++++++------------
+ 1 file changed, 12 insertions(+), 12 deletions(-)
+
+commit e03e6ebaf08f9059308088f472a09b96d359a38f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Feb 11 19:03:16 2022 +0100
+
+    sixel: Remove stray semicolon
+
+ src/sixel-test.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 5fa45b4b177989d35fad927e9f8f9d57d4dbba2a
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Feb 10 21:07:24 2022 +0100
+
+    sixel: Fix DECGRI for parameter value 0
+    
+    A DECGRI 0 should be treated like a DECGRI 1, as per DEC documentation.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2543
+
+ src/sixel-context.hh | 5 ++++-
+ src/sixel-test.cc    | 8 ++++++++
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+commit edaca046502c02a4b2e247bebae3f69f3ecb6ebd
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Feb 8 20:53:03 2022 +0100
+
+    build: Change gtk4 GIR version hack
+    
+    Seems gjs has a problem with this, so use a diffferent character.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2539
+
+ bindings/gir/meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 467063842ccee1f2917906755103101c476cc982
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Feb 8 20:30:31 2022 +0100
+
+    widget: Deprecate VteCharAttributes struct
+
+ src/meson.build         |  1 -
+ src/vte/vtedeprecated.h | 12 +++++++++++-
+ src/vte/vteterminal.h   |  9 ---------
+ src/vtegtk.cc           |  6 ++++++
+ 4 files changed, 17 insertions(+), 11 deletions(-)
+
+commit ab85f122db965d56ace54d01fd391300795ee0c0
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Feb 8 20:30:31 2022 +0100
+
+    widget: Deprecate the attributes out-param for vte_terminal_get_text
+    
+    Part of the future fix for issue #2504.
+
+ src/vtegtk.cc | 38 +++++++++++++++++++++++++++++++++-----
+ 1 file changed, 33 insertions(+), 5 deletions(-)
+
+commit 1e7be827e0fbfefddc8e785bdaac43dd353134e4
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Feb 8 20:30:31 2022 +0100
+
+    lib: Remove misplaced inline from function declaration
+
+ src/cxx-utils.hh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 0718a9a7f9300b2526eddb0fc74e25eef34795ba
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Feb 3 20:58:11 2022 +0100
+
+    emulation: Support XTVERSION sequence
+
+ src/parser-reply.hh |  1 +
+ src/parser-seq.py   |  2 ++
+ src/vteseq.cc       | 32 ++++++++++++++++++++++++++++++--
+ 3 files changed, 33 insertions(+), 2 deletions(-)
+
+commit e78b08c09dc3972ed9415fa5b82d47080a7380ca
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Feb 3 20:58:11 2022 +0100
+
+    parser: Fix comments
+
+ src/parser-charset-tables.hh | 24 ++++++++++++------------
+ 1 file changed, 12 insertions(+), 12 deletions(-)
+
+commit 49a4b4b73b75805ff40ccdab93f098d3e7c8962d
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Feb 3 20:58:11 2022 +0100
+
+    fonts: Fix height check
+
+ src/fonts-pangocairo.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit a1fee6a62d87893dceffda5cbce698ebf897a9e7
+Author: Naala Nanba <naala-nanba@rambler.ru>
+Date:   Tue Feb 1 20:46:26 2022 +0000
+
+    Add Abkhazian translation
+
+ po/LINGUAS |  1 +
+ po/ab.po   | 58 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 59 insertions(+)
+
+commit a8cd0885e4382f634a3549a417969567d1ca87d1
+Author: Sveinn í Felli <sv1@fellsnet.is>
+Date:   Sat Jan 29 11:51:06 2022 +0000
+
+    Update Icelandic translation
+    
+    (cherry picked from commit e217f867ebbd0792051ccb51d7c1cd3a0555ca67)
+
+ po/is.po | 71 ++++++++++++++++++++++++++++++++++++++++++----------------------
+ 1 file changed, 47 insertions(+), 24 deletions(-)
+
+commit 009a975e587ce22d76107d3720d60532c2c759d0
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Jan 14 21:20:50 2022 +0100
+
+    widget: Fix measure baseline to return -1
+
+ src/widget.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit e32dba1d5cf884959af5b2c0691db00c263ea048
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Dec 27 19:24:46 2021 +0100
+
+    build: Fix check for -fstack-protector* compiler support
+    
+    Need to use has_link_argument() on some platforms.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2535
+
+ meson.build | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+commit 730cca20d69cdd7fc8a67b6f578293b07373cf97
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Dec 22 21:22:35 2021 +0100
+
+    app: Fix context menu styling
+    
+    Somehow with a recent gtk3 version, the context menu inherits the monospace
+    style of the VteTerminal.
+
+ src/app/app.cc | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit 980b3f4f62051e8acf0a2a2973c861dbf8fff4db
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Dec 22 21:22:35 2021 +0100
+
+    widget: Split alignment and fill properties
+    
+    Don't encode fill as a flag within the VteAlign enum.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/337
+
+ doc/reference/vte-sections.txt.in |   4 ++
+ src/app/app.cc                    |  17 ++++-
+ src/vte.cc                        |  18 +++--
+ src/vte/vteenums.h                |   5 --
+ src/vte/vteterminal.h             |  14 ++++
+ src/vtegtk.cc                     | 142 ++++++++++++++++++++++++++++++++++++--
+ src/vtegtk.hh                     |   2 +
+ src/vteinternal.hh                |  10 +--
+ src/widget.cc                     |   6 +-
+ src/widget.hh                     |  28 +++++++-
+ 10 files changed, 221 insertions(+), 25 deletions(-)
+
+commit ba78631c2d1293575f9fef3d90989f3bcb97d077
+Author: Rico Tzschichholz <ricotz@ubuntu.com>
+Date:   Wed Dec 1 08:22:54 2021 +0100
+
+    vala: Reference of [GtkChild] field is handled by GtkBuilder, type must be unowned
+
+ bindings/vala/app.vala | 36 ++++++++++++++++++------------------
+ 1 file changed, 18 insertions(+), 18 deletions(-)
+
+commit 069b68f393c46ebfc6734708f1446419ceed95da
+Author: Rico Tzschichholz <ricotz@ubuntu.com>
+Date:   Wed Dec 1 08:21:36 2021 +0100
+
+    vala: Fix accessibility of constant intializer expression
+
+ bindings/vala/app.vala | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+commit f93a093fb2a4029ea365b24f5105b8f45a14bcd7
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Nov 27 19:45:07 2021 +0100
+
+    terminal: Make CRLF pastification smarter
+    
+    Replace lone LF with CR as previously, but replace a CR LF also
+    with CR only, not CR CR.
+    
+    This may help with https://gitlab.gnome.org/GNOME/gtk/-/issues/2307 .
+
+ src/pastify-test.cc |  5 ++++-
+ src/pastify.cc      | 30 +++++++++++++++++++++---------
+ 2 files changed, 25 insertions(+), 10 deletions(-)
+
+commit 4bbd956a155f133c289e514a8f2e48c435096258
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Nov 27 19:45:07 2021 +0100
+
+    terminal: Make pastification not replace something with nothing
+    
+    Replacing something with nothing may be dangerous in itself. So
+    instead of omitting the forbidden controls from the pasted string,
+    replace the controls with their control picture (or U+FFFD for
+    the C1 controls which have no control pictures in unicode).
+
+ src/pastify-test.cc | 29 +++++++++++--------
+ src/pastify.cc      | 81 ++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ src/pastify.hh      |  3 ++
+ 3 files changed, 101 insertions(+), 12 deletions(-)
+
+commit 7daaabbc6d8c217b01f94e28c43656fad1170391
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Nov 27 19:45:07 2021 +0100
+
+    terminal: Add tests for text paste transformation
+    
+    Move the paste transformation to its own file, and add tests.
+
+ src/meson.build     |  20 +++++-
+ src/pastify-test.cc | 198 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/pastify.cc      | 108 ++++++++++++++++++++++++++++
+ src/pastify.hh      |  30 ++++++++
+ src/vte.cc          |  65 ++---------------
+ src/vteinternal.hh  |   2 +-
+ src/widget.cc       |   2 +-
+ src/widget.hh       |   2 +-
+ 8 files changed, 364 insertions(+), 63 deletions(-)
+
+commit ffefea92b97afd334b2f09df7a2ef040598de1c8
 Author: Christian Persch <chpe@src.gnome.org>
 Date:   Sat Nov 27 19:45:07 2021 +0100
 
@@ -6,13 +3481,74 @@ Date:   Sat Nov 27 19:45:07 2021 +0100
     
     NAK and WM had the wrong codes assigned. Since both are NOPs, this
     wasn't allowing incorrrect behaviour, but needs to be corrected still.
-    
-    (cherry picked from commit ffefea92b97afd334b2f09df7a2ef040598de1c8)
 
  src/parser-seq.py | 24 ++++++++++++++++++++++--
  1 file changed, 22 insertions(+), 2 deletions(-)
 
-commit 5901ba81e615cc8ae994c31e3faaf41785bc2fd1
+commit 205aecf066326de679138106a004a0e893935a9f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Nov 27 19:45:07 2021 +0100
+
+    widget: Fix Since version for new API
+
+ src/vte/vteterminal.h | 3 ++-
+ src/vtegtk.cc         | 7 ++++---
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+commit b8cbae1a81ad879128e492d524ee55306ecf9168
+Author: Zander Brown <zbrown@gnome.org>
+Date:   Wed Nov 24 12:17:14 2021 +0000
+
+    widget: add vte_terminal_paste
+    
+    Allow providing an explict string to "paste"
+    
+    Fix: https://gitlab.gnome.org/GNOME/vte/-/issues/2531
+
+ doc/reference/vte-sections.txt.in |  1 +
+ src/vte.cc                        |  3 +--
+ src/vte/vteterminal.h             |  2 ++
+ src/vtegtk.cc                     | 25 +++++++++++++++++++++++++
+ src/vteinternal.hh                |  3 +--
+ src/widget.cc                     |  2 +-
+ src/widget.hh                     |  1 +
+ 7 files changed, 32 insertions(+), 5 deletions(-)
+
+commit ebecf6ac04488d0d697c255d582ea891c3bf1577
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Nov 7 13:38:23 2021 +0100
+
+    lib: Check for close_range function and use it when available
+    
+    This should enable using close_range also on non-linux platforms that
+    do have close_range, e.g. freebsd and (soon) hurd.
+    
+    Part of https://gitlab.gnome.org/GNOME/vte/-/issues/2528 .
+
+ meson.build    |  7 +++++++
+ src/missing.cc | 29 +++++++++--------------------
+ src/missing.hh | 11 +++++++++++
+ src/spawn.cc   | 12 ++++++++++++
+ 4 files changed, 39 insertions(+), 20 deletions(-)
+
+commit 86d004afa2bc563977e4ffd9a12181b58b770b0e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Nov 7 13:38:23 2021 +0100
+
+    build: Rework function checks
+    
+    Meson's compiler.has_function() is broken when the function checked for
+    has multiple overloads, e.g. for strchrnul which has overloads for
+    char* and const char*.
+    [https://github.com/mesonbuild/meson/issues/8075].
+    
+    Use compiler.compiles() instead with hand-crafted source that also
+    checks the function has the correct prototype.
+
+ meson.build | 179 ++++++++++++++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 143 insertions(+), 36 deletions(-)
+
+commit db3c6253d7fa1645996a2abd9fd55df414ca4c2d
 Author: Luis Javier Merino Morán <ninjalj@gmail.com>
 Date:   Thu Nov 4 19:25:09 2021 +0100
 
@@ -24,13 +3560,12 @@ Date:   Thu Nov 4 19:25:09 2021 +0100
     SCORCTests.test_SaveRestoreCursor_InsertNotAffected
     
     Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2524
-    (cherry picked from commit db3c6253d7fa1645996a2abd9fd55df414ca4c2d)
 
  src/vte.cc         | 4 ----
  src/vteinternal.hh | 1 -
  2 files changed, 5 deletions(-)
 
-commit b252bc26e695501b4799c2d2ec89e9a1c91a6685
+commit c695b5e9f308cbb9e0d8dfcc9af924e177ba2c6d
 Author: Luis Javier Merino Morán <ninjalj@gmail.com>
 Date:   Thu Nov 4 19:14:58 2021 +0100
 
@@ -40,21 +3575,88 @@ Date:   Thu Nov 4 19:14:58 2021 +0100
     end-exclusive, and DECRQCRA was not updated accordingly.
     
     Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2523
-    (cherry picked from commit c695b5e9f308cbb9e0d8dfcc9af924e177ba2c6d)
 
  src/vteseq.cc | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
-commit 952a7e748d24e554f01ae12f160c56e688ee72d5
+commit f52c9c23e1862b67679997f404adcd60ee61bbd0
 Author: Christian Persch <chpe@src.gnome.org>
-Date:   Sat Oct 30 20:27:18 2021 +0200
+Date:   Sat Oct 23 20:55:15 2021 +0200
 
-    build: Post release version bump
+    widget: Add more precondition checks for vte_pty_spawn_async_with_fds
 
- meson.build | 2 +-
+ src/vtepty.cc | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+commit cc8c374ccb3a22bb55d33154664d2b81feb35a61
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Oct 23 20:55:15 2021 +0200
+
+    spawn: FD reassignment code tweaks
+    
+    Made these while researching whether vte suffers from glib#2503.
+
+ src/spawn.cc | 27 ++++++++++++++++-----------
+ 1 file changed, 16 insertions(+), 11 deletions(-)
+
+commit 7d0c6aeaa870b67a3897bd439bb076d5ef376f2d
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Oct 23 20:55:15 2021 +0200
+
+    parser: Recognise more commands
+    
+    Add one sequence from mintty.
+
+ src/parser-seq.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+commit 51cd95caa2cf63270c51d6df027afe0252487ccd
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Oct 23 20:55:15 2021 +0200
+
+    app: Improve option value description
+
+ src/app/app.cc | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
-commit 29bc0a2d7fefc0e8bc5f60b72c3a666809d490f9 (tag: 0.66.1)
+commit 374e89381bc47f26260597fca67689a29600b8c6
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Oct 23 20:55:15 2021 +0200
+
+    emulation: Docs improvements
+
+ src/vteseq.cc | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+commit 357f8d066703700df2b4d4b69fd13f7ee5d70745
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Oct 9 20:16:05 2021 +0200
+
+    fonts: Relax font sanitisation
+    
+    Allow specifying a font weight, but cap it so that emboldening it does
+    not overflow the maximum weight.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/323
+    f# bricht den Commit ab.
+
+ src/vte.cc | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+commit 05fb6061fb962fee09085f5d7c9f9fd27202e2c6
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Oct 9 20:16:05 2021 +0200
+
+    fonts: Improve font bolding
+    
+    Embolden the font by adding to its weight, not just overwriting the
+    weight with PANGO_WEIGHT_BOLD.
+
+ src/drawing-cairo.cc | 8 +++++++-
+ src/vtedefines.hh    | 2 ++
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+commit 64b333b11b840d2fad6643516d5b0116ef82dba4
 Author: Christian Persch <chpe@src.gnome.org>
 Date:   Fri Oct 8 19:24:57 2021 +0200
 
@@ -63,21 +3665,64 @@ Date:   Fri Oct 8 19:24:57 2021 +0200
     Based on a patch by Zach DeCook.
     
     Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2517
-    (cherry picked from commit 64b333b11b840d2fad6643516d5b0116ef82dba4)
 
  src/app/app.cc | 12 +++++-------
  1 file changed, 5 insertions(+), 7 deletions(-)
 
-commit ca56bac88059a5b3cf3edda5ed58da7449cfa553
+commit 91123bb5201156e3d3adbe24305488f5eea2c8d7
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Sep 27 22:46:47 2021 +0200
+
+    build: Fix build with kernel headers from linux < 4.13
+    
+    We already support running with a kernel that doesn't support this
+    ioctl, so let's also support building with one. Add the missing
+    ioctl definition to missing.hh.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2514
+
+ src/missing.hh | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+commit 231dd818fcca839f21a1031497b37b7142a12645
 Author: Yaron Shahrabani <sh.yaron@gmail.com>
 Date:   Mon Sep 27 08:50:19 2021 +0000
 
     Update Hebrew translation
+    
+    (cherry picked from commit ca56bac88059a5b3cf3edda5ed58da7449cfa553)
 
  po/he.po | 71 +++++++++++++++++++++++++++++++++++++++++-----------------------
  1 file changed, 46 insertions(+), 25 deletions(-)
 
-commit 1fe2f3e9e11d1b8b0e45698a268b77e8f52e25db
+commit 73a029f06ceb67d3422a1c80a16602ada3ca0009
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Sep 26 19:12:57 2021 +0200
+
+    lib: ABI repairs
+
+ src/vte/vteterminal.h | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+commit d0bf44719a546dd24b3da08c934d8530ef474acd
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Sep 25 10:54:37 2021 +0200
+
+    parser: modes: Fix DECSDM default value
+
+ src/modes.hh | 1 -
+ 1 file changed, 1 deletion(-)
+
+commit 2b0e792eafcb1b4cedaa8d84ef595b8de9d8f4ca
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Sep 25 10:50:29 2021 +0200
+
+    parser: modes: Fix DECSDM default value
+
+ src/modes.py | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+commit 2e0ae811fdea963ce0709eaedf14b8b7697908f7
 Author: Christian Persch <chpe@src.gnome.org>
 Date:   Sat Sep 25 10:50:29 2021 +0200
 
@@ -91,34 +3736,7 @@ Date:   Sat Sep 25 10:50:29 2021 +0200
  src/vte.sh.in | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
-commit d44d57745dad46ea4ebe1f17ccd3fb45cb8f4953
-Author: Christian Persch <chpe@src.gnome.org>
-Date:   Wed Sep 22 18:41:53 2021 +0200
-
-    build: Post release version bump
-
- meson.build | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
-
-commit 956d3bbd265279c296c56d9fb5ada1fee94768ee (tag: 0.66.0)
-Author: Christian Persch <chpe@src.gnome.org>
-Date:   Wed Sep 22 18:41:17 2021 +0200
-
-    build: Version 0.66.0
-
- meson.build | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
-
-commit b2423d2aaaf3da96c2d9ab782c1789bd8a32cc7d
-Author: Źmicier Turok <nashtlumach@gmail.com>
-Date:   Sat Sep 18 09:58:38 2021 +0000
-
-    Update Belarusian translation
-
- po/be.po | 79 +++++++++++++++++++++++++++-------------------------------------
- 1 file changed, 33 insertions(+), 46 deletions(-)
-
-commit 6a2ec5f7960c15a4743aead98ec49bbc8c7af443
+commit 0178c1b0a3d2c162bfddcd161ab55f4ff79b1ab4
 Author: Christian Persch <chpe@src.gnome.org>
 Date:   Sun Aug 29 22:24:57 2021 +0200
 
@@ -127,24 +3745,41 @@ Date:   Sun Aug 29 22:24:57 2021 +0200
     The parameters were accidentally swapped.
     
     Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2509
-    (cherry picked from commit 0178c1b0a3d2c162bfddcd161ab55f4ff79b1ab4)
 
  src/vteseq.cc | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)
 
-commit 3601d2dfae082d54ab47a50d0738cbb6b159c803
+commit 5c067c2a64c411ad5c8cf28e9e5f0f58759a1a08
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Aug 29 19:06:46 2021 +0200
+
+    docs: Add index for API new in 0.68
+
+ doc/reference/vte-docs.xml | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+commit 9e2df181c8eebd4858f8257695b1b31081c32ed8
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Aug 29 19:06:46 2021 +0200
+
+    widget: Correct some API Since: versions
+
+ src/vte/vteenums.h |  2 +-
+ src/vtegtk.cc      | 12 ++++++------
+ 2 files changed, 7 insertions(+), 7 deletions(-)
+
+commit 8620b577303e60ef78efd6b66d9c79dcee579e39
 Author: Takao Fujiwara <tfujiwar@redhat.com>
 Date:   Sat Aug 28 22:12:59 2021 +0200
 
     widget: Adjust preedit position to GtkEntry
     
     Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/339
-    (cherry picked from commit 8620b577303e60ef78efd6b66d9c79dcee579e39)
 
  src/vte.cc | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
-commit 5791f72343582a131acdfce1334415dbc12ad3f7
+commit e67d15735e1410e139f8e1943cc6ca728524c34d
 Author: Christian Persch <chpe@src.gnome.org>
 Date:   Sat Aug 28 22:00:06 2021 +0200
 
@@ -155,12 +3790,11 @@ Date:   Sat Aug 28 22:00:06 2021 +0200
     the PROMPT_COMMAND with __vte_prompt_command.
     
     Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/37
-    (cherry picked from commit e67d15735e1410e139f8e1943cc6ca728524c34d)
 
  src/vte.sh.in | 31 ++++++++++++++++++++++++-------
  1 file changed, 24 insertions(+), 7 deletions(-)
 
-commit f72e6b8caf6d1710040ff43cb2ba8dd719d34a41
+commit 6c24f146a0f6a3829e3d36a3c2c3601e638e3a50
 Author: Christian Persch <chpe@src.gnome.org>
 Date:   Sat Aug 28 21:18:52 2021 +0200
 
@@ -175,115 +3809,18 @@ Date:   Sat Aug 28 21:18:52 2021 +0200
     least that of the measured characters.
     
     Fixes: https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/340
-    (cherry picked from commit 6c24f146a0f6a3829e3d36a3c2c3601e638e3a50)
 
  src/fonts-pangocairo.cc | 12 +++++++++++-
  1 file changed, 11 insertions(+), 1 deletion(-)
 
-commit 4bf5eca3e3ec472a0b68e1122d3edf4e120b90a5
+commit f688626f920480d95a7691a49b38eac1873f9849
 Author: Christian Persch <chpe@src.gnome.org>
-Date:   Mon Aug 16 11:08:29 2021 +0200
+Date:   Sat Aug 14 23:23:47 2021 +0200
 
-    build: Post release version bump
+    build: Post branch version bump
 
  meson.build | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
-
-commit 757fc880364e5100dfaaea27d880ed488897b16b (tag: 0.65.91)
-Author: Christian Persch <chpe@src.gnome.org>
-Date:   Mon Aug 16 11:07:40 2021 +0200
-
-    build: Remove left-over test
-    
-    fixup! ba1e05c9ad34d0e48a823ad5a67b96baa166de24
-    
-    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2507
-
- src/meson.build | 6 ------
- 1 file changed, 6 deletions(-)
-
-commit 18d5d6b3f9631e41dd1fc322ace06634102d310b
-Author: Christian Persch <chpe@src.gnome.org>
-Date:   Sat Aug 14 21:47:27 2021 +0200
-
-    build: Post release version bump
-
- meson.build | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
-
-commit 15ca4f9a4ff16ee325077d8349c9189b8c171efc (tag: 0.65.90)
-Author: Christian Persch <chpe@src.gnome.org>
-Date:   Sat Aug 14 21:46:55 2021 +0200
-
-    Version 0.65.90
-
- meson.build | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
-
-commit ba1e05c9ad34d0e48a823ad5a67b96baa166de24
-Author: Christian Persch <chpe@src.gnome.org>
-Date:   Sat Aug 14 21:45:46 2021 +0200
-
-    all: Remove SIXEL support from stable branch
-    
-    The SIXEL support is not in a releasable state with
-    important and fundamental problems still unsolved.
-    
-    (cherry picked from commit d578bd30b18a0d040305f356a3327fbd011e5451)
-
- meson.build          |    2 -
- meson_options.txt    |    7 -
- src/app/app.cc       |    6 -
- src/debug.cc         |    1 -
- src/debug.h          |    1 -
- src/fwd.hh           |    8 -
- src/image.cc         |   68 ---
- src/image.hh         |  102 ----
- src/meson.build      |   50 --
- src/parser-cat.cc    |  327 -----------
- src/parser-seq.py    |    2 +-
- src/pty.cc           |    4 -
- src/ring.cc          |  225 +------
- src/ring.hh          |   45 --
- src/sixel-context.cc |  516 ----------------
- src/sixel-context.hh |  660 ---------------------
- src/sixel-fuzzer.cc  |  763 ------------------------
- src/sixel-parser.hh  |  669 ---------------------
- src/sixel-test.cc    | 1589 --------------------------------------------------
- src/vte.cc           |  179 +-----
- src/vtedefines.hh    |    6 -
- src/vtegtk.cc        |   26 +-
- src/vteinternal.hh   |   38 --
- src/vteseq.cc        |  223 +------
- src/widget.hh        |    3 -
- 25 files changed, 19 insertions(+), 5501 deletions(-)
-
-commit 0857ff7dd555d2f5e0c6627a7723ce6dee7d24d7
-Author: Christian Persch <chpe@src.gnome.org>
-Date:   Sat Aug 14 21:45:46 2021 +0200
-
-    widget: Defer alignment API to next cycle
-    
-    This API is untested and can possibly be improved, so don't freeze it now.
-
- doc/reference/vte-sections.txt.in |   5 --
- src/app/app.cc                    |  33 --------
- src/vte/vteenums.h                |  24 ------
- src/vte/vteterminal.h             |  14 ----
- src/vtegtk.cc                     | 153 --------------------------------------
- src/vtegtk.hh                     |   2 -
- src/widget.cc                     |   4 +-
- src/widget.hh                     |  26 -------
- 8 files changed, 2 insertions(+), 259 deletions(-)
-
-commit 1e38c581b8cc45be46e0bb1f2fec2df50712bb3b
-Author: Christian Persch <chpe@src.gnome.org>
-Date:   Sat Aug 14 21:45:46 2021 +0200
-
-    build: Assert on non-supported option on stable branch
-
- meson.build | 2 ++
- 1 file changed, 2 insertions(+)
 
 commit 6460463b258d69ae12e5e9db09e9414403e136b5
 Author: Christian Persch <chpe@src.gnome.org>

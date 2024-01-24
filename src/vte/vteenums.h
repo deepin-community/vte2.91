@@ -196,4 +196,23 @@ typedef enum /*< skip >*/ {
         VTE_FEATURE_FLAGS_MASK   = 0xFFFFFFFFFFFFFFFFULL, /* force enum to 64 bit */
 } VteFeatureFlags;
 
+
+/**
+ * VteAlign:
+ * @VTE_ALIGN_START: align to left/top
+ * @VTE_ALIGN_CENTER: align to centre
+ * @VTE_ALIGN_END: align to right/bottom
+ *
+ * An enumeration type that can be used to specify how the terminal
+ * uses extra allocated space.
+ *
+ * Since: 0.76
+ */
+typedef enum {
+        VTE_ALIGN_START       = 0U,
+        VTE_ALIGN_CENTER      = 1U,
+        /* VTE_ALIGN_BASELINE    = 2U, */
+        VTE_ALIGN_END         = 3U,
+} VteAlign;
+
 G_END_DECLS
