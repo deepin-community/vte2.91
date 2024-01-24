@@ -23,7 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
-#ifdef HAVE_SYS_SYSLIMITS_H
+#if __has_include(<sys/syslimits.h>)
 #include <sys/syslimits.h>
 #endif
 
@@ -72,7 +72,7 @@ enum {
 void
 vte::parser::Sequence::print() const noexcept
 {
-#ifdef VTE_DEBUG
+#if VTE_DEBUG
         auto c = m_seq != nullptr ? terminator() : 0;
         char c_buf[7];
         g_snprintf(c_buf, sizeof(c_buf), "%lc", c);
@@ -229,13 +229,20 @@ Terminal::emit_resize_window(guint columns,
  * In VTE, a different technical approach is used.  The cursor is advanced to
  * the invisible column on the right, but it's set back to the visible
  * rightmost column whenever necessary (that is, before handling any of the
- * sequences that disable the special cased mode in xterm).  (Bug 731155.)
+ * sequences that disable the special cased mode in xterm).
+ *
+ * Similarly, if a right margin is set up and the cursor moved just beyond
+ * that margin due to a graphic character (as opposed to a cursor moving
+ * escape sequence) then set back the cursor by one column.
+ *
+ * See https://gitlab.gnome.org/GNOME/vte/-/issues/2108
+ * and https://gitlab.gnome.org/GNOME/vte/-/issues/2677
  */
 void
-Terminal::ensure_cursor_is_onscreen()
+Terminal::maybe_retreat_cursor()
 {
-        if (G_UNLIKELY (m_screen->cursor.col >= m_column_count))
-                m_screen->cursor.col = m_column_count - 1;
+        m_screen->cursor.col = get_xterm_cursor_column();
+        m_screen->cursor_advanced_by_graphic_character = false;
 }
 
 void
@@ -247,8 +254,10 @@ Terminal::home_cursor()
 void
 Terminal::clear_screen()
 {
-        auto row = m_screen->cursor.row - m_screen->insert_delta;
-        auto initial = _vte_ring_next(m_screen->row_data);
+        maybe_retreat_cursor();
+
+        auto row = get_xterm_cursor_row();
+        auto initial = m_screen->row_data->next();
 	/* Add a new screen's worth of rows. */
         for (auto i = 0; i < m_row_count; i++)
                 ring_append(true);
@@ -256,6 +265,7 @@ Terminal::clear_screen()
 	 * newly-cleared area and scroll if need be. */
         m_screen->insert_delta = initial;
         m_screen->cursor.row = row + m_screen->insert_delta;
+        m_screen->cursor_advanced_by_graphic_character = false;
         adjust_adjustments();
 	/* Redraw everything. */
         invalidate_all();
@@ -269,11 +279,13 @@ Terminal::clear_current_line()
 {
 	VteRowData *rowdata;
 
-	/* If the cursor is actually on the screen, clear data in the row
+        maybe_retreat_cursor();
+
+        /* If the cursor's row is covered by the ring, clear data in the row
 	 * which corresponds to the cursor. */
-        if (_vte_ring_next(m_screen->row_data) > m_screen->cursor.row) {
+        if (long(m_screen->row_data->next()) > m_screen->cursor.row) {
 		/* Get the data for the row which the cursor points to. */
-                rowdata = _vte_ring_index_writable(m_screen->row_data, m_screen->cursor.row);
+                rowdata = m_screen->row_data->index_writable(m_screen->cursor.row);
 		g_assert(rowdata != NULL);
 		/* Remove it. */
 		_vte_row_data_shrink (rowdata, 0);
@@ -294,14 +306,14 @@ void
 Terminal::clear_above_current()
 {
         /* Make the line just above the writable area hard wrapped. */
-        if (m_screen->insert_delta > _vte_ring_delta(m_screen->row_data)) {
+        if (m_screen->insert_delta > long(m_screen->row_data->delta())) {
                 set_hard_wrapped(m_screen->insert_delta - 1);
         }
         /* Clear data in all the writable rows above (excluding) the cursor's. */
         for (auto i = m_screen->insert_delta; i < m_screen->cursor.row; i++) {
-                if (_vte_ring_next(m_screen->row_data) > i) {
+                if (long(m_screen->row_data->next()) > i) {
 			/* Get the data for the row we're erasing. */
-                        auto rowdata = _vte_ring_index_writable(m_screen->row_data, i);
+                        auto rowdata = m_screen->row_data->index_writable(i);
 			g_assert(rowdata != NULL);
 			/* Remove it. */
 			_vte_row_data_shrink (rowdata, 0);
@@ -318,61 +330,10 @@ Terminal::clear_above_current()
         m_text_deleted_flag = TRUE;
 }
 
-/* Scroll the text, but don't move the cursor.  Negative = up, positive = down. */
-void
-Terminal::scroll_text(vte::grid::row_t scroll_amount)
-{
-        vte::grid::row_t start, end;
-        if (m_scrolling_restricted) {
-                start = m_screen->insert_delta + m_scrolling_region.start;
-                end = m_screen->insert_delta + m_scrolling_region.end;
-	} else {
-                start = m_screen->insert_delta;
-                end = start + m_row_count - 1;
-	}
-
-        while (_vte_ring_next(m_screen->row_data) <= end)
-                ring_append(false);
-
-	if (scroll_amount > 0) {
-                /* Scroll down. */
-		for (auto i = 0; i < scroll_amount; i++) {
-                        ring_remove(end);
-                        ring_insert(start, true);
-		}
-                /* Set the boundaries to hard wrapped where we tore apart the contents.
-                 * Need to do it after scrolling down, for the end row to be the desired one. */
-                set_hard_wrapped(start - 1);
-                set_hard_wrapped(end);
-	} else {
-                /* Set the boundaries to hard wrapped where we're about to tear apart the contents.
-                 * Need to do it before scrolling up, for the end row to be the desired one. */
-                set_hard_wrapped(start - 1);
-                set_hard_wrapped(end);
-                /* Scroll up. */
-		for (auto i = 0; i < -scroll_amount; i++) {
-                        ring_remove(start);
-                        ring_insert(end, true);
-		}
-	}
-
-        /* Repaint the affected lines. No need to extend, set_hard_wrapped() took care of
-         * invalidating the context lines if necessary. */
-        invalidate_rows(start, end);
-
-	/* Adjust the scrollbars if necessary. */
-        adjust_adjustments();
-
-	/* We've modified the display.  Make a note of it. */
-        m_text_inserted_flag = TRUE;
-        m_text_deleted_flag = TRUE;
-}
-
 void
 Terminal::restore_cursor()
 {
         restore_cursor(m_screen);
-        ensure_cursor_is_onscreen();
 }
 
 void
@@ -397,19 +358,21 @@ Terminal::switch_screen(VteScreen *new_screen)
          * wouldn't make sense and could lead to crashes.
          * Ideally we'd carry the target URI itself, but I'm just lazy.
          * Also, run a GC before we switch away from that screen. */
-        m_hyperlink_hover_idx = _vte_ring_get_hyperlink_at_position(m_screen->row_data, -1, -1, true, NULL);
+        m_hyperlink_hover_idx = m_screen->row_data->get_hyperlink_at_position(-1, -1, true, NULL);
         g_assert (m_hyperlink_hover_idx == 0);
         m_hyperlink_hover_uri = NULL;
         emit_hyperlink_hover_uri_changed(NULL);  /* FIXME only emit if really changed */
-        m_defaults.attr.hyperlink_idx = _vte_ring_get_hyperlink_idx(m_screen->row_data, NULL);
+        m_defaults.attr.hyperlink_idx = m_screen->row_data->get_hyperlink_idx(NULL);
         g_assert (m_defaults.attr.hyperlink_idx == 0);
 
         /* cursor.row includes insert_delta, adjust accordingly */
         auto cr = m_screen->cursor.row - m_screen->insert_delta;
         auto cc = m_screen->cursor.col;
+        auto cadv = m_screen->cursor_advanced_by_graphic_character;
         m_screen = new_screen;
         m_screen->cursor.row = cr + m_screen->insert_delta;
         m_screen->cursor.col = cc;
+        m_screen->cursor_advanced_by_graphic_character = cadv;
 
         /* Make sure the ring is large enough */
         ensure_row();
@@ -499,6 +462,7 @@ Terminal::set_mode_private(int mode,
                  */
                 if (m_modes_private.XTERM_DECCOLM()) {
                         emit_resize_window(set ? 132 : 80, m_row_count);
+                        m_scrolling_region.reset();
                         clear_screen();
                         home_cursor();
                 }
@@ -517,6 +481,12 @@ Terminal::set_mode_private(int mode,
                 /* No need to invalidate the cursor here, this is done
                  * in process_incoming().
                  */
+                break;
+
+        case vte::terminal::modes::Private::eDECLRMM:
+                if (!set) {
+                        m_scrolling_region.reset_horizontal();
+                }
                 break;
 
         case vte::terminal::modes::Private::eXTERM_ALTBUF:
@@ -660,7 +630,7 @@ Terminal::set_character_replacement(unsigned slot)
 void
 Terminal::clear_to_bol()
 {
-        ensure_cursor_is_onscreen();
+        maybe_retreat_cursor();
 
 	/* Get the data for the row which the cursor points to. */
 	auto rowdata = ensure_row();
@@ -691,15 +661,15 @@ Terminal::clear_to_bol()
 void
 Terminal::clear_below_current()
 {
-        ensure_cursor_is_onscreen();
+        maybe_retreat_cursor();
 
 	/* If the cursor is actually on the screen, clear the rest of the
 	 * row the cursor is on and all of the rows below the cursor. */
         VteRowData *rowdata;
         auto i = m_screen->cursor.row;
-	if (i < _vte_ring_next(m_screen->row_data)) {
+	if (i < long(m_screen->row_data->next())) {
 		/* Get the data for the row we're clipping. */
-                rowdata = _vte_ring_index_writable(m_screen->row_data, i);
+                rowdata = m_screen->row_data->index_writable(i);
                 /* Clean up Tab/CJK fragments. */
                 if ((glong) _vte_row_data_length(rowdata) > m_screen->cursor.col)
                         cleanup_fragments(m_screen->cursor.col, _vte_row_data_length(rowdata));
@@ -709,10 +679,10 @@ Terminal::clear_below_current()
 	}
 	/* Now for the rest of the lines. */
         for (i = m_screen->cursor.row + 1;
-	     i < _vte_ring_next(m_screen->row_data);
+	     i < long(m_screen->row_data->next());
 	     i++) {
 		/* Get the data for the row we're removing. */
-		rowdata = _vte_ring_index_writable(m_screen->row_data, i);
+		rowdata = m_screen->row_data->index_writable(i);
 		/* Remove it. */
 		if (rowdata)
 			_vte_row_data_shrink (rowdata, 0);
@@ -724,8 +694,8 @@ Terminal::clear_below_current()
 	     i < m_screen->insert_delta + m_row_count;
 	     i++) {
 		/* Retrieve the row's data, creating it if necessary. */
-		if (_vte_ring_contains(m_screen->row_data, i)) {
-			rowdata = _vte_ring_index_writable (m_screen->row_data, i);
+		if (m_screen->row_data->contains(i)) {
+			rowdata = m_screen->row_data->index_writable(i);
 			g_assert(rowdata != NULL);
 		} else {
 			rowdata = ring_append(false);
@@ -755,7 +725,7 @@ Terminal::clear_to_eol()
 	 * influence the text flow, and serves as a perfect workaround against a new line
 	 * getting painted with the active background color (except for a possible flicker).
 	 */
-	/* ensure_cursor_is_onscreen(); */
+        /* maybe_retreat_cursor(); */
 
 	/* Get the data for the row which the cursor points to. */
         auto rowdata = ensure_cursor();
@@ -784,14 +754,29 @@ Terminal::clear_to_eol()
  * Terminal::set_cursor_column:
  * @col: the column. 0-based from 0 to m_column_count - 1
  *
- * Sets the cursor column to @col, clamped to the range 0..m_column_count-1.
+ * Sets the cursor column to @col.
+ *
+ * @col is relative relative to the DECSLRM scrolling region iff origin mode (DECOM) is enabled.
  */
 void
 Terminal::set_cursor_column(vte::grid::column_t col)
 {
 	_vte_debug_print(VTE_DEBUG_PARSER,
                          "Moving cursor to column %ld.\n", col);
-        m_screen->cursor.col = CLAMP(col, 0, m_column_count - 1);
+
+        vte::grid::column_t left_col, right_col;
+        if (m_modes_private.DEC_ORIGIN()) {
+                left_col = m_scrolling_region.left();
+                right_col = m_scrolling_region.right();
+        } else {
+                left_col = 0;
+                right_col = m_column_count - 1;
+        }
+        col += left_col;
+        col = CLAMP(col, left_col, right_col);
+
+        m_screen->cursor.col = col;
+        m_screen->cursor_advanced_by_graphic_character = false;
 }
 
 void
@@ -802,27 +787,31 @@ Terminal::set_cursor_column1(vte::grid::column_t col)
 
 /*
  * Terminal::set_cursor_row:
- * @row: the row. 0-based and relative to the scrolling region
+ * @row: the row. 0-based
  *
- * Sets the cursor row to @row. @row is relative to the scrolling region
- * (0 if restricted scrolling is off).
+ * Sets the cursor row to @row.
+ *
+ * @row is relative to the scrolling DECSTBM scrolling region iff origin mode (DECOM) is enabled.
  */
 void
 Terminal::set_cursor_row(vte::grid::row_t row)
 {
-        vte::grid::row_t start_row, end_row;
-        if (m_modes_private.DEC_ORIGIN() &&
-            m_scrolling_restricted) {
-                start_row = m_scrolling_region.start;
-                end_row = m_scrolling_region.end;
+        _vte_debug_print(VTE_DEBUG_PARSER,
+                         "Moving cursor to row %ld.\n", row);
+
+        vte::grid::row_t top_row, bottom_row;
+        if (m_modes_private.DEC_ORIGIN()) {
+                top_row = m_scrolling_region.top();
+                bottom_row = m_scrolling_region.bottom();
         } else {
-                start_row = 0;
-                end_row = m_row_count - 1;
+                top_row = 0;
+                bottom_row = m_row_count - 1;
         }
-        row += start_row;
-        row = CLAMP(row, start_row, end_row);
+        row += top_row;
+        row = CLAMP(row, top_row, bottom_row);
 
         m_screen->cursor.row = row + m_screen->insert_delta;
+        m_screen->cursor_advanced_by_graphic_character = false;
 }
 
 void
@@ -832,37 +821,16 @@ Terminal::set_cursor_row1(vte::grid::row_t row)
 }
 
 /*
- * Terminal::get_cursor_row:
- *
- * Returns: the relative cursor row, 0-based and relative to the scrolling region
- * if set (regardless of origin mode).
- */
-vte::grid::row_t
-Terminal::get_cursor_row_unclamped() const
-{
-        auto row = m_screen->cursor.row - m_screen->insert_delta;
-        /* Note that we do NOT check DEC_ORIGIN mode here! */
-        if (m_scrolling_restricted) {
-                row -= m_scrolling_region.start;
-        }
-        return row;
-}
-
-vte::grid::column_t
-Terminal::get_cursor_column_unclamped() const
-{
-        return m_screen->cursor.col;
-}
-
-/*
  * Terminal::set_cursor_coords:
- * @row: the row. 0-based and relative to the scrolling region
+ * @row: the row. 0-based
  * @col: the column. 0-based from 0 to m_column_count - 1
  *
- * Sets the cursor row to @row. @row is relative to the scrolling region
- * (0 if restricted scrolling is off).
+ * Sets the cursor row to @row.
  *
  * Sets the cursor column to @col, clamped to the range 0..m_column_count-1.
+ *
+ * @row and @col are relative to the scrolling DECSTBM / DECSLRM scrolling region
+ * iff origin mode (DECOM) is enabled.
  */
 void
 Terminal::set_cursor_coords(vte::grid::row_t row,
@@ -880,68 +848,6 @@ Terminal::set_cursor_coords1(vte::grid::row_t row,
         set_cursor_row1(row);
 }
 
-/* Delete a character at the current cursor position. */
-void
-Terminal::delete_character()
-{
-	VteRowData *rowdata;
-	long col;
-
-        ensure_cursor_is_onscreen();
-
-        if (_vte_ring_next(m_screen->row_data) > m_screen->cursor.row) {
-		long len;
-		/* Get the data for the row which the cursor points to. */
-                rowdata = _vte_ring_index_writable(m_screen->row_data, m_screen->cursor.row);
-		g_assert(rowdata != NULL);
-                col = m_screen->cursor.col;
-		len = _vte_row_data_length (rowdata);
-
-                bool const not_default_bg = (m_color_defaults.attr.back() != VTE_DEFAULT_BG);
-                if (not_default_bg) {
-                        _vte_row_data_fill(rowdata, &basic_cell, m_column_count);
-                        len = m_column_count;
-                }
-
-		/* Remove the column. */
-		if (col < len) {
-                        /* Clean up Tab/CJK fragments. */
-                        cleanup_fragments(col, col + 1);
-			_vte_row_data_remove (rowdata, col);
-
-                        if (not_default_bg) {
-                                _vte_row_data_fill(rowdata, &m_color_defaults, m_column_count);
-                                len = m_column_count;
-			}
-                        set_hard_wrapped(m_screen->cursor.row);
-                        /* Repaint this row's paragraph. */
-                        invalidate_row_and_context(m_screen->cursor.row);
-		}
-	}
-
-	/* We've modified the display.  Make a note of it. */
-        m_text_deleted_flag = TRUE;
-}
-
-void
-Terminal::move_cursor_down(vte::grid::row_t rows)
-{
-        rows = CLAMP(rows, 1, m_row_count);
-
-        // FIXMEchpe why not do this afterwards?
-        ensure_cursor_is_onscreen();
-
-        vte::grid::row_t end;
-        // FIXMEchpe why not check DEC_ORIGIN here?
-        if (m_scrolling_restricted && m_screen->cursor.row <= m_screen->insert_delta + m_scrolling_region.end) {
-                end = m_screen->insert_delta + m_scrolling_region.end;
-	} else {
-                end = m_screen->insert_delta + m_row_count - 1;
-	}
-
-        m_screen->cursor.row = MIN(m_screen->cursor.row + rows, end);
-}
-
 void
 Terminal::erase_characters(long count,
                            bool use_basic)
@@ -949,11 +855,13 @@ Terminal::erase_characters(long count,
 	VteCell *cell;
 	long col, i;
 
-        ensure_cursor_is_onscreen();
+        maybe_retreat_cursor();
+
+        count = CLAMP(count, 1, m_column_count - m_screen->cursor.col);
 
 	/* Clear out the given number of characters. */
 	auto rowdata = ensure_row();
-        if (_vte_ring_next(m_screen->row_data) > m_screen->cursor.row) {
+        if (long(m_screen->row_data->next()) > m_screen->cursor.row) {
 		g_assert(rowdata != NULL);
                 /* Clean up Tab/CJK fragments. */
                 cleanup_fragments(m_screen->cursor.col, m_screen->cursor.col + count);
@@ -982,48 +890,139 @@ Terminal::erase_characters(long count,
         m_text_deleted_flag = TRUE;
 }
 
-/* Insert a blank character. */
 void
-Terminal::insert_blank_character()
+Terminal::erase_image_rect(vte::grid::row_t rows,
+                           vte::grid::column_t columns)
 {
-        ensure_cursor_is_onscreen();
+        auto const top = m_screen->cursor.row;
 
-        auto save = m_screen->cursor;
-        insert_char(' ', true, true);
-        m_screen->cursor = save;
+        /* FIXMEchpe: simplify! */
+        for (auto i = 0; i < rows; ++i) {
+                auto const row = top + i;
+
+                erase_characters(columns, true);
+
+                if (row > m_screen->insert_delta - 1 &&
+                    row < m_screen->insert_delta + m_row_count)
+                        set_hard_wrapped(row);
+
+                if (i == rows - 1) {
+                        if (m_modes_private.MINTTY_SIXEL_SCROLL_CURSOR_RIGHT())
+                                move_cursor_forward(columns);
+                        else
+                                cursor_down_with_scrolling(true);
+                } else {
+                        cursor_down_with_scrolling(true);
+                }
+        }
+        m_screen->cursor_advanced_by_graphic_character = false;
 }
 
+/* Terminal::move_cursor_up:
+ * Cursor up by n rows (respecting the DECSTBM / DECSLRM scrolling region).
+ *
+ * See the "CUU, CUD, CUB, CUF" picture in ../doc/scrolling-region.txt.
+ *
+ * DEC STD 070 says not to move further if the cursor hits the margin outside of the scrolling area.
+ * Xterm follows this, and so do we. Reportedly (#2526) DEC terminals move the cursor despite their doc.
+ */
+void
+Terminal::move_cursor_up(vte::grid::row_t rows)
+{
+        // FIXMEchpe allow 0 as no-op?
+        rows = CLAMP(rows, 1, m_row_count);
+
+        //FIXMEchpe why not do this afterward?
+        maybe_retreat_cursor();
+
+        vte::grid::row_t top;
+        if (m_screen->cursor.row >= m_screen->insert_delta + m_scrolling_region.top()) {
+                top = m_screen->insert_delta + m_scrolling_region.top();
+	} else {
+		top = m_screen->insert_delta;
+	}
+
+        m_screen->cursor.row = MAX(m_screen->cursor.row - rows, top);
+        m_screen->cursor_advanced_by_graphic_character = false;
+}
+
+/* Terminal::move_cursor_down:
+ * Cursor down by n rows (respecting the DECSTBM / DECSLRM scrolling region).
+ *
+ * See the "CUU, CUD, CUB, CUF" picture in ../doc/scrolling-region.txt.
+ *
+ * DEC STD 070 says not to move further if the cursor hits the margin outside of the scrolling area.
+ * Xterm follows this, and so do we. Reportedly (#2526) DEC terminals move the cursor despite their doc.
+ */
+void
+Terminal::move_cursor_down(vte::grid::row_t rows)
+{
+        rows = CLAMP(rows, 1, m_row_count);
+
+        // FIXMEchpe why not do this afterwards?
+        maybe_retreat_cursor();
+
+        vte::grid::row_t bottom;
+        if (m_screen->cursor.row <= m_screen->insert_delta + m_scrolling_region.bottom()) {
+                bottom = m_screen->insert_delta + m_scrolling_region.bottom();
+	} else {
+                bottom = m_screen->insert_delta + m_row_count - 1;
+	}
+
+        m_screen->cursor.row = MIN(m_screen->cursor.row + rows, bottom);
+        m_screen->cursor_advanced_by_graphic_character = false;
+}
+
+/* Terminal::move_cursor_backward:
+ * Cursor left by n columns (respecting the DECSTBM / DECSLRM scrolling region).
+ *
+ * See the "CUU, CUD, CUB, CUF" picture in ../doc/scrolling-region.txt.
+ *
+ * DEC STD 070 says not to move further if the cursor hits the margin outside of the scrolling area.
+ * Xterm follows this, and so do we. Reportedly (#2526) DEC terminals move the cursor despite their doc.
+ */
 void
 Terminal::move_cursor_backward(vte::grid::column_t columns)
 {
-        ensure_cursor_is_onscreen();
+        columns = CLAMP(columns, 1, m_column_count);
 
-        auto col = get_cursor_column_unclamped();
-        columns = CLAMP(columns, 1, col);
-        set_cursor_column(col - columns);
+        maybe_retreat_cursor();
+
+        vte::grid::column_t left;
+        if (m_screen->cursor.col >= m_scrolling_region.left()) {
+                left = m_scrolling_region.left();
+        } else {
+                left = 0;
+        }
+
+        m_screen->cursor.col = MAX(m_screen->cursor.col - columns, left);
+        m_screen->cursor_advanced_by_graphic_character = false;
 }
 
+/* Terminal::move_cursor_forward:
+ * Cursor right by n columns (respecting the DECSTBM / DECSLRM scrolling region).
+ *
+ * See the "CUU, CUD, CUB, CUF" picture in ../doc/scrolling-region.txt.
+ *
+ * DEC STD 070 says not to move further if the cursor hits the margin outside of the scrolling area.
+ * Xterm follows this, and so do we. Reportedly (#2526) DEC terminals move the cursor despite their doc.
+ */
 void
 Terminal::move_cursor_forward(vte::grid::column_t columns)
 {
         columns = CLAMP(columns, 1, m_column_count);
 
-        ensure_cursor_is_onscreen();
+        maybe_retreat_cursor();
 
-        /* The cursor can be further to the right, don't move in that case. */
-        auto col = get_cursor_column_unclamped();
-        if (col < m_column_count) {
-		/* There's room to move right. */
-                set_cursor_column(col + columns);
-	}
-}
+        vte::grid::column_t right;
+        if (m_screen->cursor.col <= m_scrolling_region.right()) {
+                right = m_scrolling_region.right();
+        } else {
+                right = m_column_count - 1;
+        }
 
-void
-Terminal::line_feed()
-{
-        ensure_cursor_is_onscreen();
-        cursor_down(true);
-        maybe_apply_bidi_attributes(VTE_BIDI_FLAG_ALL);
+        m_screen->cursor.col = MIN(m_screen->cursor.col + columns, right);
+        m_screen->cursor_advanced_by_graphic_character = false;
 }
 
 void
@@ -1032,8 +1031,16 @@ Terminal::move_cursor_tab_backward(int count)
         if (count == 0)
                 return;
 
-        auto const newcol = m_tabstops.get_previous(get_cursor_column(), count, 0);
-        set_cursor_column(newcol);
+        auto const col = get_xterm_cursor_column();
+
+        /* Find the count'th previous tabstop, but don't cross the left margin.
+         * The exact desired behavior is debated, though.
+         * See https://gitlab.gnome.org/GNOME/vte/-/issues/2526#note_1879956 */
+        auto const stop = col >= m_scrolling_region.left() ? m_scrolling_region.left() : 0;
+        auto const newcol = m_tabstops.get_previous(col, count, stop);
+
+        m_screen->cursor.col = newcol;
+        m_screen->cursor_advanced_by_graphic_character = false;
 }
 
 void
@@ -1042,14 +1049,23 @@ Terminal::move_cursor_tab_forward(int count)
         if (count == 0)
                 return;
 
-        auto const col = get_cursor_column();
+        auto const col = get_xterm_cursor_column();
 
-	/* Find the next tabstop, but don't go beyond the end of the line */
-        int const newcol = m_tabstops.get_next(col, count, m_column_count - 1);
+        /* If a printable character would wrap then a TAB does nothing;
+         * most importantly, does not snap back the cursor.
+         * https://gitlab.gnome.org/GNOME/gnome-terminal/-/issues/3461 */
+        if (col < m_screen->cursor.col)
+                return;
 
-	/* Make sure we don't move cursor back (see bug #340631) */
-        // FIXMEchpe how could this happen!?
-	if (col >= newcol)
+        /* Find the count'th next tabstop, but don't cross the right margin.
+         * The exact desired behavior is debated, though.
+         * See https://gitlab.gnome.org/GNOME/vte/-/issues/2526#note_1879956 */
+        auto const stop = col <= m_scrolling_region.right() ? m_scrolling_region.right() : m_column_count - 1;
+        auto const newcol = m_tabstops.get_next(col, count, stop);
+
+        /* If the cursor didn't advance then nothing left to do. */
+        vte_assert_cmpint((int)newcol, >=, col);
+        if ((int)newcol == col)
                 return;
 
         /* Smart tab handling: bug 353610
@@ -1076,11 +1092,8 @@ Terminal::move_cursor_tab_forward(int count)
         if (col >= old_len && (newcol - col) <= VTE_TAB_WIDTH_MAX) {
                 glong i;
                 VteCell *cell = _vte_row_data_get_writable (rowdata, col);
-                VteCell tab = *cell;
-                tab.attr.set_columns(newcol - col);
-                tab.c = '\t';
-                /* Save tab char */
-                *cell = tab;
+                cell->c = '\t';
+                cell->attr.set_columns(newcol - col);
                 /* And adjust the fragments */
                 for (i = col + 1; i < newcol; i++) {
                         cell = _vte_row_data_get_writable (rowdata, i);
@@ -1093,26 +1106,32 @@ Terminal::move_cursor_tab_forward(int count)
         /* Repaint the cursor. */
         invalidate_row(m_screen->cursor.row);
         m_screen->cursor.col = newcol;
+        m_screen->cursor_advanced_by_graphic_character = false;
 }
 
 void
-Terminal::move_cursor_up(vte::grid::row_t rows)
+Terminal::carriage_return()
 {
-        // FIXMEchpe allow 0 as no-op?
-        rows = CLAMP(rows, 1, m_row_count);
+        /* Xterm and DEC STD 070 p5-58 agree that if the cursor is to the left
+         * of the left margin then move it to the first column.
+         * They disagree whether to stop at the left margin if the cursor is to
+         * the right of the left margin, but outside of the top/bottom margins.
+         * Follow Xterm's behavior for now, subject to change if needed, as per
+         * the discussions at https://gitlab.gnome.org/GNOME/vte/-/issues/2526 */
+        if (m_screen->cursor.col >= m_scrolling_region.left()) {
+                m_screen->cursor.col = m_scrolling_region.left();
+        } else {
+                m_screen->cursor.col = 0;
+        }
+        m_screen->cursor_advanced_by_graphic_character = false;
+}
 
-        //FIXMEchpe why not do this afterward?
-        ensure_cursor_is_onscreen();
-
-        vte::grid::row_t start;
-        //FIXMEchpe why not check DEC_ORIGIN mode here?
-        if (m_scrolling_restricted && m_screen->cursor.row >= m_screen->insert_delta + m_scrolling_region.start) {
-                start = m_screen->insert_delta + m_scrolling_region.start;
-	} else {
-		start = m_screen->insert_delta;
-	}
-
-        m_screen->cursor.row = MAX(m_screen->cursor.row - rows, start);
+void
+Terminal::line_feed()
+{
+        maybe_retreat_cursor();
+        cursor_down_with_scrolling(true);
+        maybe_apply_bidi_attributes(VTE_BIDI_FLAG_ALL);
 }
 
 /*
@@ -1280,102 +1299,6 @@ Terminal::erase_in_line(vte::parser::Sequence const& seq)
         m_text_deleted_flag = TRUE;
 }
 
-void
-Terminal::insert_lines(vte::grid::row_t param)
-{
-        vte::grid::row_t start, end, i;
-
-	/* Find the region we're messing with. */
-        auto row = m_screen->cursor.row;
-        if (m_scrolling_restricted) {
-                start = m_screen->insert_delta + m_scrolling_region.start;
-                end = m_screen->insert_delta + m_scrolling_region.end;
-	} else {
-                start = m_screen->insert_delta;
-                end = m_screen->insert_delta + m_row_count - 1;
-	}
-
-        /* Don't do anything if the cursor is outside of the scrolling region: DEC STD 070 & bug #199. */
-        if (m_screen->cursor.row < start || m_screen->cursor.row > end)
-                return;
-
-	/* Only allow to insert as many lines as there are between this row
-         * and the end of the scrolling region. See bug #676090.
-         */
-        auto limit = end - row + 1;
-        param = MIN (param, limit);
-
-	for (i = 0; i < param; i++) {
-		/* Clear a line off the end of the region and add one to the
-		 * top of the region. */
-                ring_remove(end);
-                ring_insert(row, true);
-	}
-
-        /* Set the boundaries to hard wrapped where we tore apart the contents.
-         * Need to do it after scrolling down, for the end row to be the desired one. */
-        set_hard_wrapped(row - 1);
-        set_hard_wrapped(end);
-
-        m_screen->cursor.col = 0;
-
-        /* Repaint the affected lines. No need to extend, set_hard_wrapped() took care of
-         * invalidating the context lines if necessary. */
-        invalidate_rows(row, end);
-	/* Adjust the scrollbars if necessary. */
-        adjust_adjustments();
-	/* We've modified the display.  Make a note of it. */
-        m_text_inserted_flag = TRUE;
-}
-
-void
-Terminal::delete_lines(vte::grid::row_t param)
-{
-        vte::grid::row_t start, end, i;
-
-	/* Find the region we're messing with. */
-        auto row = m_screen->cursor.row;
-        if (m_scrolling_restricted) {
-                start = m_screen->insert_delta + m_scrolling_region.start;
-                end = m_screen->insert_delta + m_scrolling_region.end;
-	} else {
-                start = m_screen->insert_delta;
-                end = m_screen->insert_delta + m_row_count - 1;
-	}
-
-        /* Don't do anything if the cursor is outside of the scrolling region: DEC STD 070 & bug #199. */
-        if (m_screen->cursor.row < start || m_screen->cursor.row > end)
-                return;
-
-        /* Set the boundaries to hard wrapped where we're about to tear apart the contents.
-         * Need to do it before scrolling up, for the end row to be the desired one. */
-        set_hard_wrapped(row - 1);
-        set_hard_wrapped(end);
-
-        /* Only allow to delete as many lines as there are between this row
-         * and the end of the scrolling region. See bug #676090.
-         */
-        auto limit = end - row + 1;
-        param = MIN (param, limit);
-
-	/* Clear them from below the current cursor. */
-	for (i = 0; i < param; i++) {
-		/* Insert a line at the end of the region and remove one from
-		 * the top of the region. */
-                ring_remove(row);
-                ring_insert(end, true);
-	}
-        m_screen->cursor.col = 0;
-
-        /* Repaint the affected lines. No need to extend, set_hard_wrapped() took care of
-         * invalidating the context lines if necessary. */
-        invalidate_rows(row, end);
-	/* Adjust the scrollbars if necessary. */
-        adjust_adjustments();
-	/* We've modified the display.  Make a note of it. */
-        m_text_deleted_flag = TRUE;
-}
-
 bool
 Terminal::get_osc_color_index(int osc,
                                         int value,
@@ -1509,8 +1432,10 @@ Terminal::reset_color(vte::parser::Sequence const& seq,
 
         while (token != endtoken) {
                 int value;
-                if (!token.number(value))
+                if (!token.number(value)) {
+                        ++token;
                         continue;
+                }
 
                 int index;
                 if (get_osc_color_index(osc, value, index) &&
@@ -1628,13 +1553,13 @@ Terminal::set_current_hyperlink(vte::parser::Sequence const& seq,
 
                 _vte_debug_print (VTE_DEBUG_HYPERLINK, "OSC 8: id;uri=\"%s\"\n", hyperlink.data());
 
-                idx = _vte_ring_get_hyperlink_idx(m_screen->row_data, hyperlink.data());
+                idx = m_screen->row_data->get_hyperlink_idx(hyperlink.data());
         } else {
                 if (G_UNLIKELY(len > VTE_HYPERLINK_URI_LENGTH_MAX))
                         _vte_debug_print (VTE_DEBUG_HYPERLINK, "Overlong URI ignored (len %" G_GSIZE_FORMAT ")\n", len);
 
                 /* idx = 0; also remove the previous current_idx so that it can be GC'd now. */
-                idx = _vte_ring_get_hyperlink_idx(m_screen->row_data, nullptr);
+                idx = m_screen->row_data->get_hyperlink_idx(nullptr);
         }
 
         m_defaults.attr.hyperlink_idx = idx;
@@ -1687,7 +1612,7 @@ Terminal::GRAPHIC(vte::parser::Sequence const& seq)
         return 0;
 #endif
 
-        insert_char(seq.terminator(), false, false);
+        insert_char(seq.terminator(), false);
 }
 
 void
@@ -1847,12 +1772,7 @@ Terminal::BS(vte::parser::Sequence const& seq)
         screen_cursor_left(screen, 1);
 #endif
 
-        ensure_cursor_is_onscreen();
-
-        if (m_screen->cursor.col > 0) {
-		/* There's room to move left, so do so. */
-                m_screen->cursor.col--;
-	}
+        move_cursor_backward(1);
 }
 
 void
@@ -1862,8 +1782,8 @@ Terminal::CBT(vte::parser::Sequence const& seq)
          * CBT - cursor-backward-tabulation
          * Move the cursor @args[0] tabs backwards (to the left). The
          * current cursor cell, in case it's a tab, is not counted.
-         * Furthermore, the cursor cannot be moved beyond position 0 and
-         * it will stop there.
+         * Furthermore, the cursor cannot be moved beyond the left margin
+         * and it will stop there.
          *
          * Defaults:
          *   args[0]: 1
@@ -1933,7 +1853,7 @@ Terminal::CHT(vte::parser::Sequence const& seq)
          * CHT - cursor-horizontal-forward-tabulation
          * Move the cursor @args[0] tabs forward (to the right) (presentation).
          * The current cursor cell, in case it's a tab, is not counted.
-         * Furthermore, the cursor cannot be moved beyond the rightmost cell
+         * Furthermore, the cursor cannot be moved beyond the right margin
          * and will stop there.
          *
          * Arguments:
@@ -1969,9 +1889,8 @@ Terminal::CNL(vte::parser::Sequence const& seq)
 {
         /*
          * CNL - cursor-next-line
-         * Move the cursor @args[0] lines down.
-         *
-         * TODO: Does this stop at the bottom or cause a scroll-up?
+         * Move the cursor @args[0] lines down, without scrolling, stopping at the bottom margin.
+         * Also moves the cursor all the way to the left, stopping at the left margin.
          *
          * Arguments:
          *   args[0]: number of lines
@@ -1991,7 +1910,7 @@ Terminal::CNL(vte::parser::Sequence const& seq)
         screen_cursor_down(screen, num, false);
 #endif
 
-        set_cursor_column1(1);
+        carriage_return();
 
         auto value = seq.collect1(0, 1);
         move_cursor_down(value);
@@ -2002,7 +1921,8 @@ Terminal::CPL(vte::parser::Sequence const& seq)
 {
         /*
          * CPL - cursor-preceding-line
-         * Move the cursor @args[0] lines up, without scrolling.
+         * Move the cursor @args[0] lines up, without scrolling, stoppng at the top margin.
+         * Also moves the cursor all the way to the left, stopping at the left margin.
          *
          * Arguments:
          *   args[0]: number of lines
@@ -2022,7 +1942,7 @@ Terminal::CPL(vte::parser::Sequence const& seq)
         screen_cursor_up(screen, num, false);
 #endif
 
-        set_cursor_column(0);
+        carriage_return();
 
         auto const value = seq.collect1(0, 1);
         move_cursor_up(value);
@@ -2033,7 +1953,7 @@ Terminal::CR(vte::parser::Sequence const& seq)
 {
         /*
          * CR - carriage-return
-         * Move the cursor to the left margin on the current line.
+         * Move the cursor to the left margin or to the left edge on the current line.
          *
          * References: ECMA-48 § 8.3.15
          */
@@ -2042,7 +1962,7 @@ Terminal::CR(vte::parser::Sequence const& seq)
         screen_cursor_set(screen, 0, screen->state.cursor_y);
 #endif
 
-        set_cursor_column(0);
+        carriage_return();
 }
 
 void
@@ -2061,7 +1981,7 @@ Terminal::CTC(vte::parser::Sequence const& seq)
         case -1:
         case 0:
                 /* Set tabstop at the current cursor position */
-                m_tabstops.set(get_cursor_column());
+                m_tabstops.set(get_xterm_cursor_column());
                 break;
 
         case 1:
@@ -2070,7 +1990,7 @@ Terminal::CTC(vte::parser::Sequence const& seq)
 
         case 2:
                 /* Clear tabstop at the current cursor position */
-                m_tabstops.unset(get_cursor_column());
+                m_tabstops.unset(get_xterm_cursor_column());
                 break;
 
         case 3:
@@ -2376,7 +2296,11 @@ Terminal::DA1(vte::parser::Sequence const& seq)
                 return;
 
         reply(seq, VTE_REPLY_DECDA1R, {65, 1,
-                                       9});
+#if WITH_SIXEL
+                                       m_sixel_enabled ? 4 : -2 /* skip */,
+#endif
+                                       9,
+                                       21});
 }
 
 void
@@ -2524,12 +2448,23 @@ Terminal::DCH(vte::parser::Sequence const& seq)
                                  screen->age);
 #endif
 
-        auto const value = seq.collect1(0, 1, 1, int(m_column_count - m_screen->cursor.col));
+        auto cursor_row = get_xterm_cursor_row();
+        auto cursor_col = get_xterm_cursor_column();
 
-        // FIXMEchpe pass count to delete_character() and simplify
-        // to only cleanup fragments once
-        for (auto i = 0; i < value; i++)
-                delete_character();
+        /* If the cursor (xterm-like interpretation when about to wrap) is horizontally outside
+         * the DECSLRM margins then do nothing. */
+        if (cursor_col < m_scrolling_region.left() || cursor_col > m_scrolling_region.right()) {
+                return;
+        }
+
+        maybe_retreat_cursor();
+
+        auto const count = seq.collect1(0, 1);
+        /* Scroll left in a custom region: only the cursor's row, from the cursor to the DECSLRM right margin. */
+        auto scrolling_region{m_scrolling_region};
+        scrolling_region.set_vertical(cursor_row, cursor_row);
+        scrolling_region.set_horizontal(cursor_col, scrolling_region.right());
+        scroll_text_left(scrolling_region, count, true /* fill */);
 }
 
 void
@@ -2562,16 +2497,18 @@ Terminal::DECALN(vte::parser::Sequence const& seq)
          * References: VT525
          */
 
-        // FIXMEchpe! reset margins and home cursor
+        m_scrolling_region.reset();
+        m_modes_private.set_DEC_ORIGIN(false);
+        home_cursor();
 
 	for (auto row = m_screen->insert_delta;
 	     row < m_screen->insert_delta + m_row_count;
 	     row++) {
 		/* Find this row. */
-                while (_vte_ring_next(m_screen->row_data) <= row)
+                while (long(m_screen->row_data->next()) <= row)
                         ring_append(false);
                 adjust_adjustments();
-                auto rowdata = _vte_ring_index_writable (m_screen->row_data, row);
+                auto rowdata = m_screen->row_data->index_writable(row);
 		g_assert(rowdata != NULL);
 		/* Clear this row. */
 		_vte_row_data_shrink (rowdata, 0);
@@ -2662,9 +2599,10 @@ Terminal::DECBI(vte::parser::Sequence const& seq)
          * DECBI adds a new column at the left margin with no visual attributes.
          * DECBI does not affect the margins. If the cursor is beyond the
          * left-margin at the left border, then the terminal ignores DECBI.
-         *
-         * Probably not worth implementing.
          */
+
+        maybe_retreat_cursor();
+        cursor_left_with_scrolling(true);
 }
 
 void
@@ -2781,10 +2719,28 @@ Terminal::DECDC(vte::parser::Sequence const& seq)
         /*
          * DECDC - delete-column
          *
-         * References: VT525
+         * Defaults:
+         *   args[0]: 1
          *
-         * Probably not worth implementing.
+         * References: VT525
          */
+
+        auto cursor_row = get_xterm_cursor_row();
+        auto cursor_col = get_xterm_cursor_column();
+
+        /* If the cursor (xterm-like interpretation when about to wrap) is outside
+         * the DECSTBM / DECSLRM scrolling region then do nothing. */
+        if (!m_scrolling_region.contains_row_col(cursor_row, cursor_col)) {
+                return;
+        }
+
+        /* As per xterm, do not clear the "about to wrap" state, so no maybe_retreat_cursor() here. */
+
+        auto const count = seq.collect1(0, 1);
+        /* Scroll left in a custom region: the left is at the cursor, the rest is according to DECSTBM / DECSLRM. */
+        auto scrolling_region{m_scrolling_region};
+        scrolling_region.set_horizontal(cursor_col, scrolling_region.right());
+        scroll_text_left(scrolling_region, count, true /* fill */);
 }
 
 void
@@ -2986,9 +2942,16 @@ Terminal::DECFI(vte::parser::Sequence const& seq)
          * receives DECFI, then the terminal ignores DECFI.
          *
          * References: VT525
-         *
-         * Probably not worth implementing.
          */
+
+        /* Unlike the DECBI, IND, RI counterparts, this one usually doesn't clear the
+         * "about to wrap" state in xterm. However, it clears it if the cursor is at
+         * the right edge of the terminal, beyond the right margin. */
+        if (m_screen->cursor.col == m_column_count &&
+            m_scrolling_region.right() < m_column_count - 1) {
+                maybe_retreat_cursor();
+        }
+        cursor_right_with_scrolling(true);
 }
 
 void
@@ -3056,9 +3019,24 @@ Terminal::DECIC(vte::parser::Sequence const& seq)
          *   args[0]: 1
          *
          * References: VT525
-         *
-         * Probably not worth implementing.
          */
+
+        auto cursor_row = get_xterm_cursor_row();
+        auto cursor_col = get_xterm_cursor_column();
+
+        /* If the cursor (xterm-like interpretation when about to wrap) is outside
+         * the DECSTBM / DECSLRM scrolling region then do nothing. */
+        if (!m_scrolling_region.contains_row_col(cursor_row, cursor_col)) {
+                return;
+        }
+
+        /* As per xterm, do not clear the "about to wrap" state, so no maybe_retreat_cursor() here. */
+
+        auto const count = seq.collect1(0, 1);
+        /* Scroll right in a custom region: the left is at the cursor, the rest is according to DECSTBM / DECSLRM. */
+        auto scrolling_region{m_scrolling_region};
+        scrolling_region.set_horizontal(cursor_col, scrolling_region.right());
+        scroll_text_right(scrolling_region, count, true /* fill */);
 }
 
 void
@@ -3297,14 +3275,20 @@ Terminal::DECPS(vte::parser::Sequence const& seq)
          * Plays a note. Arguments:
          *   @args[0]: the volume. 0 = off, 1…3 = low, 4…7 = high
          *   @args[1]: the duration, in multiples of 1s/32
-         *   @args[2]: the note; from 1 = C5, 2 = C♯5 … to 25 = C7
+         *   @args[2..]: the note(s); from 1 = C5, 2 = C♯5 … to 25 = C7
          *
          * Defaults:
          *   @args[0]: no default
          *   @args[1]: no default
-         *   @args[2]: no default
+         *   @args[2..]: no default
          *
          * Note that a VT525 is specified to store only 16 notes at a time.
+         *
+         * Note that while the VT520/525 programming manual documents the
+         * DECPS sequence on page 5-89 with only one note, in the Setup
+         * section on page 2-60 it shows the sequence taking multiple notes
+         * (likely up to the maximum number or parameters the VT525
+         * supports in CSI sequences, which is at least 16 as per DEC STD 070).
          *
          * References: VT525
          *
@@ -3505,7 +3489,7 @@ Terminal::DECRQCRA(vte::parser::Sequence const& seq)
         unsigned int idx = 0;
         int id = seq.collect1(idx);
 
-#ifndef VTE_DEBUG
+#if !VTE_DEBUG
         /* Send a dummy reply */
         return reply(seq, VTE_REPLY_DECCKSR, {id}, "0000");
 #else
@@ -3528,13 +3512,13 @@ Terminal::DECRQCRA(vte::parser::Sequence const& seq)
         idx = seq.next(idx);
         int right = seq.collect1(idx, m_column_count, 1, m_column_count);
 
-        if (m_modes_private.DEC_ORIGIN() &&
-            m_scrolling_restricted) {
-                top += m_scrolling_region.start;
-
-                bottom += m_scrolling_region.start;
-                bottom = std::min(bottom, m_scrolling_region.end);
-
+        if (m_modes_private.DEC_ORIGIN()) {
+                top += m_scrolling_region.top();
+                bottom += m_scrolling_region.top();
+                bottom = std::min(bottom, m_scrolling_region.bottom());
+                left += m_scrolling_region.left();
+                right += m_scrolling_region.left();
+                right = std::min(right, m_scrolling_region.right());
         }
 
         unsigned int checksum;
@@ -3765,13 +3749,15 @@ Terminal::DECRQSS(vte::parser::Sequence const& seq)
                 return reply(seq, VTE_REPLY_DECRPSS, {1}, {VTE_REPLY_DECSCUSR, {int(m_cursor_style)}});
 
         case VTE_CMD_DECSTBM:
-                if (m_scrolling_restricted)
-                        return reply(seq, VTE_REPLY_DECRPSS, {1},
-                                     {VTE_REPLY_DECSTBM,
-                                                     {m_scrolling_region.start + 1,
-                                                                     m_scrolling_region.end + 1}});
-                else
-                        return reply(seq, VTE_REPLY_DECRPSS, {1}, {VTE_REPLY_DECSTBM, {}});
+                return reply(seq, VTE_REPLY_DECRPSS, {1},
+                             {VTE_REPLY_DECSTBM, {m_scrolling_region.top() + 1,
+                                                  m_scrolling_region.bottom() + 1}});
+
+        case VTE_CMD_DECSLRM:
+        case VTE_CMD_DECSLRM_OR_SCOSC:
+                return reply(seq, VTE_REPLY_DECRPSS, {1},
+                             {VTE_REPLY_DECSLRM, {m_scrolling_region.left() + 1,
+                                                  m_scrolling_region.right() + 1}});
 
         case VTE_CMD_DECAC:
         case VTE_CMD_DECARR:
@@ -3792,7 +3778,6 @@ Terminal::DECRQSS(vte::parser::Sequence const& seq)
         case VTE_CMD_DECSKCV:
         case VTE_CMD_DECSLCK:
         case VTE_CMD_DECSLPP:
-        case VTE_CMD_DECSLRM:
         case VTE_CMD_DECSMBV:
         case VTE_CMD_DECSNLS:
         case VTE_CMD_DECSPMA:
@@ -4099,6 +4084,8 @@ Terminal::DECSCL(vte::parser::Sequence const& seq)
                 break;
         }
 #endif
+
+        reset_graphics_color_registers();
 }
 
 void
@@ -4343,7 +4330,7 @@ Terminal::DECSGR(vte::parser::Sequence const& seq)
         /* TODO: consider implementing sub/superscript? */
 }
 
-void
+bool
 Terminal::DECSIXEL(vte::parser::Sequence const& seq)
 {
         /*
@@ -4371,6 +4358,116 @@ Terminal::DECSIXEL(vte::parser::Sequence const& seq)
          * References: VT330
          *             DEC PPLV2 § 5.4
          */
+
+#if WITH_SIXEL
+        auto process_sixel = false;
+        auto mode = vte::sixel::Parser::Mode{};
+        if (m_sixel_enabled) {
+                switch (primary_data_syntax()) {
+                case DataSyntax::ECMA48_UTF8:
+                        process_sixel = true;
+                        mode = vte::sixel::Parser::Mode::UTF8;
+                        break;
+
+#if WITH_ICU
+                case DataSyntax::ECMA48_PCTERM:
+                        /* It's not really clear how DECSIXEL should be processed in PCTERM mode.
+                         * The DEC documentation available isn't very detailed on PCTERM mode,
+                         * and doesn't appear to mention its interaction with DECSIXEL at all.
+                         *
+                         * Since (afaik) a "real" DEC PCTERM mode only (?) translates the graphic
+                         * characters, not the whole data stream, as we do, let's assume that
+                         * DECSIXEL content should be processed as raw bytes, i.e. without any
+                         * translation.
+                         * Also, since C1 controls don't exist in PCTERM mode, let's process
+                         * DECSIXEL in 7-bit mode.
+                         *
+                         * As an added complication, we can only switch data syntaxes if
+                         * the data stream is exact, that is the charset converter has
+                         * not consumed more data than we have currently read output bytes
+                         * from it. So we need to check that the converter has no pending
+                         * characters.
+                         *
+                         * Alternatively, we could just refuse to process DECSIXEL in
+                         * PCTERM mode.
+                         */
+                        process_sixel = !m_converter->decoder().pending();
+                        mode = vte::sixel::Parser::Mode::SEVENBIT;
+                        break;
+#endif /* WITH_ICU */
+
+                default:
+                        __builtin_unreachable();
+                        process_sixel = false;
+                }
+        }
+
+        /* How to interpret args[1] is not entirely clear from the DEC
+         * documentation and other terminal emulators.
+         * We choose to make args[1]==1 mean to use transparent background.
+         * and treat all other values (default, 0, 2) as using the current
+         * SGR background colour. See the discussion in issue #253.
+         *
+         * Also use the current SGR foreground colour to initialise
+         * the special colour register so that SIXEL images which set
+         * no colours get a sensible default.
+         */
+        auto transparent_bg = bool{};
+        switch (seq.collect1(1, 2)) {
+        case -1: /* default */
+        case 0:
+        case 2:
+                transparent_bg = false;
+                break;
+
+        case 1:
+                transparent_bg = true;
+                break;
+
+        case 5: /* OR mode (a nonstandard NetBSD/x68k extension; not supported */
+                process_sixel = false;
+                break;
+
+        default:
+                transparent_bg = false;
+                break;
+        }
+
+        /* Ignore the whole sequence */
+        if (!process_sixel || seq.is_ripe() /* that shouldn't happen */) {
+                m_parser.ignore_until_st();
+                return false;
+        }
+
+        auto fore = unsigned{}, back = unsigned{};
+        auto fg = vte::color::rgb{}, bg = vte::color::rgb{};
+        resolve_normal_colors(&m_defaults, &fore, &back, fg, bg);
+
+        try {
+                if (!m_sixel_context)
+                        m_sixel_context = std::make_unique<vte::sixel::Context>();
+
+                m_sixel_context->prepare(seq.introducer(),
+                                         fg.red >> 8, fg.green >> 8, fg.blue >> 8,
+                                         bg.red >> 8, bg.green >> 8, bg.blue >> 8,
+                                         back == VTE_DEFAULT_BG || transparent_bg,
+                                         m_modes_private.XTERM_SIXEL_PRIVATE_COLOR_REGISTERS());
+
+                m_sixel_context->set_mode(mode);
+
+                /* We need to reset the main parser, so that when it is in the ground state
+                 * when processing returns to the primary data syntax from DECSIXEL
+                 */
+                m_parser.reset();
+                push_data_syntax(DataSyntax::DECSIXEL);
+
+                return true; /* switching data syntax */
+        } catch (...) {
+        }
+#endif /* WITH_SIXEL */
+
+        m_parser.ignore_until_st();
+        return false;
 }
 
 void
@@ -4486,16 +4583,31 @@ Terminal::DECSLRM(vte::parser::Sequence const& seq)
          *   args[0]: 1
          *   args[2]: page width
          *
-         * If left > right, the command is ignored.
-         * The maximum of right is the page size (set with DECSCPP);
-         * the minimum size of the scrolling region is 2 columns.
+         * If the values aren't in the right order, or after clamping don't
+         * define a region of at least 2 columns, the command is ignored.
          *
+         * The maximum of right is the page size (set with DECSCPP).
          * Homes to cursor to (1,1) of the page (scrolling region?).
          *
          * References: VT525
-         *
-         * FIXMEchpe: Consider implementing this.
          */
+
+        auto const left = seq.collect1(0, 1, 1, m_column_count);
+        auto const right = seq.collect1(seq.next(0), m_column_count, 1, m_column_count);
+
+        /* Ignore if not at least 2 columns */
+        if (right <= left)
+                return;
+
+        /* Set the right values. */
+        m_scrolling_region.set_horizontal(left - 1, right - 1);
+        if (m_scrolling_region.is_restricted()) {
+                /* Maybe extend the ring: https://gitlab.gnome.org/GNOME/vte/-/issues/2036 */
+                while (long(m_screen->row_data->next()) < m_screen->insert_delta + m_row_count)
+                        m_screen->row_data->insert(m_screen->row_data->next(), get_bidi_flags());
+        }
+
+        home_cursor();
 }
 
 void
@@ -4518,11 +4630,9 @@ Terminal::DECSLRM_OR_SCOSC(vte::parser::Sequence const& seq)
          * See issue #48.
          */
 
-#ifdef PARSER_INCLUDE_NOP
         if (m_modes_private.DECLRMM())
                 DECSLRM(seq);
         else
-#endif
                 SCOSC(seq);
 }
 
@@ -4767,7 +4877,9 @@ Terminal::DECSTBM(vte::parser::Sequence const& seq)
          *   args[0]: 1
          *   args[1]: number of lines
          *
-         * If top > bottom, the command is ignored.
+         * If the values aren't in the right order, or after clamping don't
+         * define a region of at least 2 lines, the command is ignored.
+         *
          * The maximum size of the scrolling region is the whole page.
          * Homes the cursor to position (1,1) (of the scrolling region?).
          *
@@ -4801,37 +4913,19 @@ Terminal::DECSTBM(vte::parser::Sequence const& seq)
         screen_cursor_set(screen, 0, 0);
 #endif
 
-        int start, end;
-        seq.collect(0, {&start, &end});
+        auto const top = seq.collect1(0, 1, 1, m_row_count);
+        auto const bottom = seq.collect1(seq.next(0), m_row_count, 1, m_row_count);
 
-        /* Defaults */
-        if (start <= 0)
-                start = 1;
-        if (end == -1)
-                end = m_row_count;
-
-        if (start > m_row_count ||
-            end <= start) {
-                m_scrolling_restricted = FALSE;
-                home_cursor();
+        /* Ignore if not at least 2 lines */
+        if (bottom <= top)
                 return;
-        }
-
-        if (end > m_row_count)
-                end = m_row_count;
 
 	/* Set the right values. */
-        m_scrolling_region.start = start - 1;
-        m_scrolling_region.end = end - 1;
-        m_scrolling_restricted = TRUE;
-        if (m_scrolling_region.start == 0 &&
-            m_scrolling_region.end == m_row_count - 1) {
-		/* Special case -- run wild, run free. */
-                m_scrolling_restricted = FALSE;
-	} else {
-		/* Maybe extend the ring -- bug 710483 */
-                while (_vte_ring_next(m_screen->row_data) < m_screen->insert_delta + m_row_count)
-                        _vte_ring_insert(m_screen->row_data, _vte_ring_next(m_screen->row_data), get_bidi_flags());
+        m_scrolling_region.set_vertical(top - 1, bottom - 1);
+        if (m_scrolling_region.is_restricted()) {
+                /* Maybe extend the ring: https://gitlab.gnome.org/GNOME/vte/-/issues/2036 */
+                while (long(m_screen->row_data->next()) < m_screen->insert_delta + m_row_count)
+                        m_screen->row_data->insert(m_screen->row_data->next(), get_bidi_flags());
 	}
 
         home_cursor();
@@ -5073,8 +5167,22 @@ Terminal::DL(vte::parser::Sequence const& seq)
                                  screen->age);
 #endif
 
+        auto const cursor_row = get_xterm_cursor_row();
+        auto const cursor_col = get_xterm_cursor_column();
+
+        /* If the cursor (xterm-like interpretation when about to wrap) is outside
+         * the DECSTBM / DECSLRM scrolling region then do nothing. */
+        if (!m_scrolling_region.contains_row_col(cursor_row, cursor_col)) {
+                return;
+        }
+
+        carriage_return();
+
         auto const count = seq.collect1(0, 1);
-        delete_lines(count);
+        /* Scroll up in a custom region: the top is at the cursor, the rest is according to DECSTBM / DECSLRM. */
+        auto scrolling_region{m_scrolling_region};
+        scrolling_region.set_vertical(cursor_row, scrolling_region.bottom());
+        scroll_text_up(scrolling_region, count, true /* fill */);
 }
 
 void
@@ -5160,21 +5268,24 @@ Terminal::DSR_ECMA(vte::parser::Sequence const& seq)
                  *   @arg[0]: line
                  *   @arg[1]: column
                  */
-                vte::grid::row_t rowval, origin, rowmax;
-                if (m_modes_private.DEC_ORIGIN() &&
-                    m_scrolling_restricted) {
-                        origin = m_scrolling_region.start;
-                        rowmax = m_scrolling_region.end;
-                } else {
-                        origin = 0;
-                        rowmax = m_row_count - 1;
-                }
-                // FIXMEchpe this looks wrong. shouldn't this first clamp to origin,rowmax and *then* subtract origin?
-                rowval = m_screen->cursor.row - m_screen->insert_delta - origin;
-                rowval = CLAMP(rowval, 0, rowmax);
+                vte::grid::row_t top, bottom, rowval;
+                vte::grid::column_t left, right, colval;
 
-                reply(seq, VTE_REPLY_CPR,
-                      {int(rowval + 1), int(CLAMP(m_screen->cursor.col + 1, 1, m_column_count))});
+                if (m_modes_private.DEC_ORIGIN()) {
+                        top = m_scrolling_region.top();
+                        bottom = m_scrolling_region.bottom();
+                        left = m_scrolling_region.left();
+                        right = m_scrolling_region.right();
+                } else {
+                        top = 0;
+                        bottom = m_row_count - 1;
+                        left = 0;
+                        right = m_column_count - 1;
+                }
+                rowval = CLAMP(get_xterm_cursor_row(), top, bottom) - top;
+                colval = CLAMP(get_xterm_cursor_column(), left, right) - left;
+
+                reply(seq, VTE_REPLY_CPR, {int(rowval + 1), int(colval + 1)});
                 break;
 
         default:
@@ -5207,21 +5318,24 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  *   @arg[2]: page
                  *     Always report page 1 here (per XTERM source code).
                  */
-                vte::grid::row_t rowval, origin, rowmax;
-                if (m_modes_private.DEC_ORIGIN() &&
-                    m_scrolling_restricted) {
-                        origin = m_scrolling_region.start;
-                        rowmax = m_scrolling_region.end;
-                } else {
-                        origin = 0;
-                        rowmax = m_row_count - 1;
-                }
-                // FIXMEchpe this looks wrong. shouldn't this first clamp to origin,rowmax and *then* subtract origin?
-                rowval = m_screen->cursor.row - m_screen->insert_delta - origin;
-                rowval = CLAMP(rowval, 0, rowmax);
+                vte::grid::row_t top, bottom, rowval;
+                vte::grid::column_t left, right, colval;
 
-                reply(seq, VTE_REPLY_DECXCPR,
-                      {int(rowval + 1), int(CLAMP(m_screen->cursor.col + 1, 1, m_column_count)), 1});
+                if (m_modes_private.DEC_ORIGIN()) {
+                        top = m_scrolling_region.top();
+                        bottom = m_scrolling_region.bottom();
+                        left = m_scrolling_region.left();
+                        right = m_scrolling_region.right();
+                } else {
+                        top = 0;
+                        bottom = m_row_count - 1;
+                        left = 0;
+                        right = m_column_count - 1;
+                }
+                rowval = CLAMP(get_xterm_cursor_row(), top, bottom) - top;
+                colval = CLAMP(get_xterm_cursor_column(), left, right) - left;
+
+                reply(seq, VTE_REPLY_DECXCPR, {int(rowval + 1), int(colval + 1), 1});
                 break;
 
         case 15:
@@ -5439,9 +5553,7 @@ Terminal::ECH(vte::parser::Sequence const& seq)
 
         /* Erase characters starting at the cursor position (overwriting N with
          * spaces, but not moving the cursor). */
-
-        // FIXMEchpe limit to column_count - cursor.x ?
-        auto const count = seq.collect1(0, 1, 1, int(65535));
+        auto const count = seq.collect1(0, 1);
         erase_characters(count, false);
 }
 
@@ -5941,7 +6053,7 @@ Terminal::HTS(vte::parser::Sequence const& seq)
          *             VT525
          */
 
-        m_tabstops.set(get_cursor_column());
+        m_tabstops.set(get_xterm_cursor_column());
 }
 
 void
@@ -6006,11 +6118,23 @@ Terminal::ICH(vte::parser::Sequence const& seq)
                                  screen->age);
 #endif
 
-        auto const count = seq.collect1(0, 1, 1, int(m_column_count - m_screen->cursor.col));
+        auto cursor_row = get_xterm_cursor_row();
+        auto cursor_col = get_xterm_cursor_column();
 
-        /* TODOegmont: Insert them in a single run, so that we call cleanup_fragments only once. */
-        for (auto i = 0; i < count; i++)
-                insert_blank_character();
+        /* If the cursor (xterm-like interpretation when about to wrap) is horizontally outside
+         * the DECSLRM margins then do nothing. */
+        if (cursor_col < m_scrolling_region.left() || cursor_col > m_scrolling_region.right()) {
+                return;
+        }
+
+        maybe_retreat_cursor();
+
+        auto const count = seq.collect1(0, 1);
+        /* Scroll right in a custom region: only the cursor's row, from the cursor to the DECSLRM right margin. */
+        auto scrolling_region{m_scrolling_region};
+        scrolling_region.set_vertical(cursor_row, cursor_row);
+        scrolling_region.set_horizontal(cursor_col, scrolling_region.right());
+        scroll_text_right(scrolling_region, count, true /* fill */);
 }
 
 void
@@ -6090,8 +6214,22 @@ Terminal::IL(vte::parser::Sequence const& seq)
                                  screen->age);
 #endif
 
+        auto const cursor_row = get_xterm_cursor_row();
+        auto const cursor_col = get_xterm_cursor_column();
+
+        /* If the cursor (xterm-like interpretation when about to wrap) is outside
+         * the DECSTBM / DECSLRM scrolling region then do nothing. */
+        if (!m_scrolling_region.contains_row_col(cursor_row, cursor_col)) {
+                return;
+        }
+
+        carriage_return();
+
         auto const count = seq.collect1(0, 1);
-        insert_lines(count);
+        /* Scroll down in a custom region: the top is at the cursor, the rest is according to DECSTBM / DECSLRM. */
+        auto scrolling_region{m_scrolling_region};
+        scrolling_region.set_vertical(cursor_row, scrolling_region.bottom());
+        scroll_text_down(scrolling_region, count, true /* fill */);
 }
 
 void
@@ -6397,8 +6535,13 @@ Terminal::NEL(vte::parser::Sequence const& seq)
         screen_cursor_set(screen, 0, screen->state.cursor_y);
 #endif
 
-        set_cursor_column(0);
-        cursor_down(true);
+        /* If the cursor is on the bottom margin but to the right of the right margin then
+         * Xterm doesn't scroll. esctest also checks for this behavior. In order to achieve
+         * this, move the cursor down (with scrolling) first, and then return the carriage.
+         * DEC STD 070 p5-64 disagrees, it says we should return the carriage first.
+         * See https://gitlab.gnome.org/GNOME/vte/-/issues/2526#note_1910803 */
+        cursor_down_with_scrolling(true);
+        carriage_return();
 }
 
 void
@@ -6801,7 +6944,7 @@ Terminal::REP(vte::parser::Sequence const& seq)
 
         // FIXMEchpe insert in one run so we only clean up fragments once
         for (auto i = 0; i < count; i++)
-                insert_char(m_last_graphic_character, false, true);
+                insert_char(m_last_graphic_character, true);
 }
 
 void
@@ -6818,39 +6961,8 @@ Terminal::RI(vte::parser::Sequence const& seq)
         screen_cursor_up(screen, 1, true);
 #endif
 
-        ensure_cursor_is_onscreen();
-
-        vte::grid::row_t start, end;
-        if (m_scrolling_restricted) {
-                start = m_scrolling_region.start + m_screen->insert_delta;
-                end = m_scrolling_region.end + m_screen->insert_delta;
-	} else {
-                start = m_screen->insert_delta;
-                end = start + m_row_count - 1;
-	}
-
-        if (m_screen->cursor.row == start) {
-		/* If we're at the top of the scrolling region, add a
-		 * line at the top to scroll the bottom off. */
-		ring_remove(end);
-		ring_insert(start, true);
-
-                /* Set the boundaries to hard wrapped where we tore apart the contents.
-                 * Need to do it after scrolling down, for the end row to be the desired one. */
-                set_hard_wrapped(start - 1);
-                set_hard_wrapped(end);
-
-                /* Repaint the affected lines. No need to extend, set_hard_wrapped() took care of
-                 * invalidating the context lines if necessary. */
-                invalidate_rows(start, end);
-	} else {
-		/* Otherwise, just move the cursor up. */
-                m_screen->cursor.row--;
-	}
-	/* Adjust the scrollbars if necessary. */
-        adjust_adjustments();
-	/* We modified the display, so make a note of it. */
-        m_text_modified_flag = TRUE;
+        maybe_retreat_cursor();
+        cursor_up_with_scrolling(true);
 }
 
 void
@@ -6951,9 +7063,6 @@ Terminal::SCORC(vte::parser::Sequence const& seq)
          *
          * References: VT525
          */
-
-        if (m_modes_private.DECLRMM())
-                return;
 
         restore_cursor();
 }
@@ -7126,9 +7235,9 @@ Terminal::SD(vte::parser::Sequence const& seq)
                                 NULL);
 #endif
 
-        /* Scroll the text down N lines, but don't move the cursor. */
+        /* Scroll the text down N lines in the scrolling region, but don't move the cursor. */
         auto value = std::max(seq.collect1(0, 1), int(1));
-        scroll_text(value);
+        scroll_text_down(m_scrolling_region, value, true /* fill */);
 }
 
 void
@@ -7250,10 +7359,15 @@ Terminal::SGR(vte::parser::Sequence const& seq)
                         m_defaults.attr.set_italic(true);
                         break;
                 case VTE_SGR_SET_UNDERLINE: {
-                        unsigned int v = 1;
-                        /* If we have a subparameter, get it */
+                        auto v = 1;
+                        // If we have a subparameter, get it
                         if (seq.param_nonfinal(i)) {
-                                v = seq.param(i + 1, 1, 0, 3);
+                                v = seq.param_range(i + 1, 1, 0, 3, -2);
+                                // Skip the subparam sequence if the subparam
+                                // is outside the supported range. See issue
+                                // https://gitlab.gnome.org/GNOME/vte/-/issues/2640
+                                if (v == -2)
+                                        break;
                         }
                         m_defaults.attr.set_underline(v);
                         break;
@@ -7401,9 +7515,22 @@ Terminal::SL(vte::parser::Sequence const& seq)
          *   args[0]: 1
          *
          * References: ECMA-48 § 8.3.121
-         *
-         * Probably not worth implementing.
          */
+
+        auto cursor_row = get_xterm_cursor_row();
+        auto cursor_col = get_xterm_cursor_column();
+
+        /* If the cursor (xterm-like interpretation when about to wrap) is outside
+         * the DECSTBM / DECSLRM scrolling region then do nothing. */
+        if (!m_scrolling_region.contains_row_col(cursor_row, cursor_col)) {
+                return;
+        }
+
+        /* As per xterm, do not clear the "about to wrap" state, so no maybe_retreat_cursor() here. */
+
+        /* Scroll the text to the left by N lines in the scrolling region, but don't move the cursor. */
+        auto value = std::max(seq.collect1(0, 1), int(1));
+        scroll_text_left(m_scrolling_region, value, true /* fill */);
 }
 
 void
@@ -7681,9 +7808,22 @@ Terminal::SR(vte::parser::Sequence const& seq)
          *   args[0]: 1
          *
          * References: ECMA-48 § 8.3.135
-         *
-         * Probably not worth implementing.
          */
+
+        auto cursor_row = get_xterm_cursor_row();
+        auto cursor_col = get_xterm_cursor_column();
+
+        /* If the cursor (xterm-like interpretation when about to wrap) is outside
+         * the DECSTBM / DECSLRM scrolling region then do nothing. */
+        if (!m_scrolling_region.contains_row_col(cursor_row, cursor_col)) {
+                return;
+        }
+
+        /* As per xterm, do not clear the "about to wrap" state, so no maybe_retreat_cursor() here. */
+
+        /* Scroll the text to the right by N lines in the scrolling region, but don't move the cursor. */
+        auto value = std::max(seq.collect1(0, 1), int(1));
+        scroll_text_right(m_scrolling_region, value, true /* fill */);
 }
 
 void
@@ -7887,8 +8027,9 @@ Terminal::SU(vte::parser::Sequence const& seq)
                               screen->history);
 #endif
 
+        /* Scroll the text up N lines in the scrolling region, but don't move the cursor. */
         auto value = std::max(seq.collect1(0, 1), int(1));
-        scroll_text(-value);
+        scroll_text_up(m_scrolling_region, value, true /* fill */);
 }
 
 void
@@ -7903,7 +8044,7 @@ Terminal::SUB(vte::parser::Sequence const& seq)
          * References: ECMA-48 § 8.3.148
          */
 
-        insert_char(0xfffdu, false, true);
+        insert_char(0xfffdu, true);
 }
 
 void
@@ -7998,7 +8139,7 @@ Terminal::TBC(vte::parser::Sequence const& seq)
         case -1:
         case 0:
                 /* Clear character tabstop at the current presentation position */
-                m_tabstops.unset(get_cursor_column());
+                m_tabstops.unset(get_xterm_cursor_column());
                 break;
         case 1:
                 /* Clear line tabstop at the current line */
@@ -8103,8 +8244,8 @@ Terminal::VPA(vte::parser::Sequence const& seq)
         screen_cursor_set_rel(screen, screen->state.cursor_x, pos - 1);
 #endif
 
-        // FIXMEchpe shouldn't we ensure_cursor_is_onscreen AFTER setting the new cursor row?
-        ensure_cursor_is_onscreen();
+        // FIXMEchpe shouldn't we maybe_retreat_cursor AFTER setting the new cursor row?
+        maybe_retreat_cursor();
 
         auto value = seq.collect1(0, 1, 1, m_row_count);
         set_cursor_row1(value);
@@ -8785,7 +8926,84 @@ Terminal::XTERM_SMGRAPHICS(vte::parser::Sequence const& seq)
          */
 
         auto const attr = seq.collect1(0);
-        auto status = 1, rv0 = -2, rv1 = -2;
+        auto status = 3, rv0 = -2, rv1 = -2;
+
+        switch (attr) {
+#if WITH_SIXEL
+        case 0: /* Colour registers.
+                 *
+                 * VTE doesn't support changing the number of colour registers, so always
+                 * return the fixed number, and set() returns success iff the passed number
+                 * was less or equal that number.
+                 */
+                switch (seq.collect1(1)) {
+                case 1: /* read */
+                case 2: /* reset */
+                case 4: /* read maximum */
+                        status = 0;
+                        rv0 = VTE_SIXEL_NUM_COLOR_REGISTERS;
+                        break;
+                case 3: /* set */
+                        status = (seq.collect1(2) <= VTE_SIXEL_NUM_COLOR_REGISTERS) ? 0 : 2;
+                        rv0 = VTE_SIXEL_NUM_COLOR_REGISTERS;
+                        break;
+                case -1: /* no default */
+                default:
+                        status = 2;
+                        break;
+                }
+                break;
+
+        case 1: /* SIXEL graphics geometry.
+                 *
+                 * VTE doesn't support variable geometries; always report
+                 * the maximum size of a SIXEL graphic, and set() returns success iff the
+                 * passed numbers are less or equal to that number.
+                 */
+                switch (seq.collect1(1)) {
+                case 1: /* read */
+                case 2: /* reset */
+                case 4: /* read maximum */
+                        status = 0;
+                        rv0 = VTE_SIXEL_MAX_WIDTH;
+                        rv1 = VTE_SIXEL_MAX_HEIGHT;
+                        break;
+
+                case 3: /* set */ {
+                        auto w = int{}, h = int{};
+                        if (seq.collect(2, {&w, &h}) &&
+                            w > 0 &&  w <= VTE_SIXEL_MAX_WIDTH &&
+                            h > 0 && h <= VTE_SIXEL_MAX_HEIGHT) {
+                                rv0 = VTE_SIXEL_MAX_WIDTH;
+                                rv1 = VTE_SIXEL_MAX_HEIGHT;
+                                status = 0;
+                        } else {
+                                status = 3;
+                        }
+
+                        break;
+                }
+
+                case -1: /* no default */
+                default:
+                        status = 2;
+                        break;
+                }
+                break;
+
+#endif /* WITH_SIXEL */
+
+#if 0 /* ifdef WITH_REGIS */
+        case 2:
+                status = 1;
+                break;
+#endif
+
+        case -1: /* no default value */
+        default:
+                status = 1;
+                break;
+        }
 
         reply(seq, VTE_REPLY_XTERM_SMGRAPHICS_REPORT, {attr, status, rv0, rv1});
 }
@@ -9021,7 +9239,7 @@ Terminal::XTERM_WM(vte::parser::Sequence const& seq)
                                 m_window_title_stack.emplace(m_window_title_stack.cend(),
                                                              m_window_title);
 
-                        g_assert_cmpuint(m_window_title_stack.size(), <=, VTE_WINDOW_TITLE_STACK_MAX_DEPTH);
+                        vte_assert_cmpuint(m_window_title_stack.size(), <=, VTE_WINDOW_TITLE_STACK_MAX_DEPTH);
                         break;
 
                 case VTE_OSC_XTERM_SET_ICON_TITLE:

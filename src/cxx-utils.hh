@@ -46,12 +46,12 @@ inline constexpr auto to_integral(E e) noexcept
         return static_cast<std::underlying_type_t<E>>(e);
 }
 
-#ifdef VTE_DEBUG
+#if VTE_DEBUG
 void log_exception(char const* func = __builtin_FUNCTION(),
                    char const* filename = __builtin_FILE(),
                    int const line = __builtin_LINE()) noexcept;
 #else
-inline void log_exception() noexcept;
+void log_exception() noexcept;
 #endif
 
 template <typename T, typename D, D func>

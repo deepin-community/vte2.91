@@ -1,5 +1,5 @@
 version=4
-opts="searchmode=plain, uversionmangle=s/\.(alpha|beta|rc)/~$1/" \
+opts="searchmode=plain, uversionmangle=s/\.(alpha|beta|rc)/~$1/, downloadurlmangle=s|cache.json||" \
 https://download.gnome.org/sources/vte/cache.json \
 	[\d.]+[02468]/vte-([\d.]+)@ARCHIVE_EXT@
 #opts=filenamemangle=s/.*\///g \

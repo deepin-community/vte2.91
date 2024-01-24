@@ -15,16 +15,15 @@
  * along with this library.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <config.h>
-#ifdef HAVE_SYS_TYPES_H
+#include "config.h"
+
+#if __has_include(<sys/types.h>)
 #include <sys/types.h>
 #endif
-#ifdef HAVE_SYS_SELECT_H
+#if __has_include(<sys/select.h>)
 #include <sys/select.h>
 #endif
-#ifdef HAVE_SYS_TERMIOS_H
-#include <sys/termios.h>
-#endif
+#include <termios.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -32,9 +31,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef HAVE_TERMIOS_H
-#include <termios.h>
-#endif
 #include <unistd.h>
 #include <glib.h>
 

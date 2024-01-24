@@ -68,13 +68,18 @@ public:
         gboolean no_fallback_scrolling{false};
         gboolean no_geometry_hints{false};
         gboolean no_hyperlink{false};
+        gboolean no_kinetic_scrolling{false};
         gboolean no_pty{false};
         gboolean no_rewrap{false};
         gboolean no_scrollbar{false};
         gboolean no_shaping{false};
         gboolean no_shell{false};
+        gboolean no_sixel{false};
         gboolean no_systemd_scope{false};
+        gboolean no_xfill{false};
+        gboolean no_yfill{false};
         gboolean object_notifications{false};
+        gboolean overlay_scrollbar{false};
         gboolean require_systemd_scope{false};
         gboolean reverse{false};
         gboolean scroll_unit_is_pixels{false};
@@ -119,6 +124,8 @@ public:
         VteCursorBlinkMode cursor_blink_mode{VTE_CURSOR_BLINK_SYSTEM};
         VteCursorShape cursor_shape{VTE_CURSOR_SHAPE_BLOCK};
         VteTextBlinkMode text_blink_mode{VTE_TEXT_BLINK_ALWAYS};
+        VteAlign xalign{VteAlign(-1)};
+        VteAlign yalign{VteAlign(-1)};
         vte::glib::RefPtr<GtkCssProvider> css{};
 
 #if VTE_GTK == 3
@@ -153,6 +160,86 @@ public:
         auto map_fds()
         {
                 return m_map_fds;
+        }
+
+        auto environment_for_spawn() const noexcept
+        {
+                auto envv = g_get_environ();
+
+                // Merge in extra variables
+                if (environment) {
+                        for (auto i = 0; environment[i]; ++i) {
+                                auto const eq = strchr(environment[i], '=');
+                                if (eq) {
+                                        auto const var = vte::glib::take_string(g_strndup(environment[i], eq - environment[i]));
+                                        envv = g_environ_setenv(envv, var.get(), eq + 1, true);
+                                } else {
+                                        envv = g_environ_unsetenv(envv, environment[i]);
+                                }
+                        }
+                }
+
+                // Cleanup environment
+                // List of variables and prefixes copied from gnome-terminal.
+                for (auto const& var : {"COLORTERM",
+                                        "COLUMNS",
+                                        "DESKTOP_STARTUP_ID",
+                                        "EXIT_CODE",
+                                        "EXIT_STATUS",
+                                        "GIO_LAUNCHED_DESKTOP_FILE",
+                                        "GIO_LAUNCHED_DESKTOP_FILE_PID",
+                                        "GJS_DEBUG_OUTPUT",
+                                        "GJS_DEBUG_TOPICS",
+                                        "GNOME_DESKTOP_ICON",
+                                        "INVOCATION_ID",
+                                        "JOURNAL_STREAM",
+                                        "LINES",
+                                        "LISTEN_FDNAMES",
+                                        "LISTEN_FDS",
+                                        "LISTEN_PID",
+                                        "MAINPID",
+                                        "MANAGERPID",
+                                        "NOTIFY_SOCKET",
+                                        "NOTIFY_SOCKET",
+                                        "PIDFILE",
+                                        "PWD",
+                                        "REMOTE_ADDR",
+                                        "REMOTE_PORT",
+                                        "SERVICE_RESULT",
+                                        "SHLVL",
+                                        "TERM",
+                                        "VTE_VERSION",
+                                        "WATCHDOG_PID",
+                                        "WATCHDOG_USEC",
+                                        "WINDOWID"}) {
+                        envv = g_environ_unsetenv(envv, var);
+                }
+
+                for (auto const& prefix : {"GNOME_TERMINAL_",
+
+                                           // other terminals
+                                           "FOOT_",
+                                           "ITERM2_",
+                                           "MC_",
+                                           "MINTTY_",
+                                           "PUTTY_",
+                                           "RXVT_",
+                                           "TERM_",
+                                           "URXVT_",
+                                           "WEZTERM_",
+                                           "XTERM_"}) {
+                        for (auto i = 0; envv[i]; ++i) {
+                                if (!g_str_has_prefix (envv[i], prefix))
+                                        continue;
+
+                                auto const eq = strchr(envv[i], '=');
+                                g_assert(eq);
+                                auto const var = vte::glib::take_string(g_strndup(envv[i], eq - envv[i]));
+                                envv = g_environ_unsetenv(envv, var.get());
+                        }
+                }
+
+                return vte::glib::take_strv(envv);
         }
 
 private:
@@ -473,6 +560,28 @@ private:
                 return true;
         }
 
+        static gboolean
+        parse_xalign(char const* option, char const* value, void* data, GError** error)
+        {
+                auto const that = static_cast<Options*>(data);
+                auto v = int{};
+                auto const rv = that->parse_enum(VTE_TYPE_ALIGN, value, v, error);
+                if (rv)
+                        that->xalign = VteAlign(v);
+                return rv;
+        }
+
+        static gboolean
+        parse_yalign(char const* option, char const* value, void* data, GError** error)
+        {
+                auto const that = static_cast<Options*>(data);
+                auto v = int{};
+                auto const rv = that->parse_enum(VTE_TYPE_ALIGN, value, v, error);
+                if (rv)
+                        that->yalign = VteAlign(v);
+                return rv;
+        }
+
 public:
 
         double get_alpha() const
@@ -565,7 +674,7 @@ public:
                         { "extra-margin", 0, 0, G_OPTION_ARG_INT, &extra_margin,
                           "Add extra margin around the terminal widget", "MARGIN" },
                         { "fd", 0, 0, G_OPTION_ARG_CALLBACK, (void*)parse_fd,
-                          "Pass file descriptor N (as M) to the child process", "N[=M]" },
+                          "Pass file descriptor N (as M) to the child process", "N[:M]|N[=M]" },
                         { "feed-stdin", 'B', 0, G_OPTION_ARG_NONE, &feed_stdin,
                           "Feed input to the terminal", nullptr },
                         { "font", 'f', 0, G_OPTION_ARG_STRING, &font_string,
@@ -598,6 +707,8 @@ public:
                           "Allow the terminal to be resized to any dimension, not constrained to fit to an integer multiple of characters", nullptr },
                         { "no-hyperlink", 'H', 0, G_OPTION_ARG_NONE, &no_hyperlink,
                           "Disable hyperlinks", nullptr },
+                        { "no-kinetic-scrolling", 'k', 0, G_OPTION_ARG_NONE, &no_kinetic_scrolling,
+                          "Disable kinetic scrolling", nullptr },
                         { "no-pty", 0, 0, G_OPTION_ARG_NONE, &no_pty,
                           "Disable PTY creation with --no-shell", nullptr },
                         { "no-rewrap", 'R', 0, G_OPTION_ARG_NONE, &no_rewrap,
@@ -608,12 +719,16 @@ public:
                           "Disable Arabic shaping", nullptr },
                         { "no-shell", 'S', 0, G_OPTION_ARG_NONE, &no_shell,
                           "Disable spawning a shell inside the terminal", nullptr },
+                        { "no-sixel", 0, 0, G_OPTION_ARG_NONE, &no_sixel,
+                          "Disable SIXEL images", nullptr },
                         { "no-systemd-scope", 0, 0, G_OPTION_ARG_NONE, &no_systemd_scope,
                           "Don't use systemd user scope", nullptr },
                         { "object-notifications", 'N', 0, G_OPTION_ARG_NONE, &object_notifications,
                           "Print VteTerminal object notifications", nullptr },
                         { "output-file", 0, 0, G_OPTION_ARG_FILENAME, &output_filename,
                           "Save terminal contents to file at exit", nullptr },
+                        { "overlay-scrollbar", 'N', 0, G_OPTION_ARG_NONE, &overlay_scrollbar,
+                          "Print VteTerminal object notifications", nullptr },
                         { "reverse", 0, 0, G_OPTION_ARG_NONE, &reverse,
                           "Reverse foreground/background colors", nullptr },
                         { "require-systemd-scope", 0, 0, G_OPTION_ARG_NONE, &require_systemd_scope,
@@ -622,6 +737,8 @@ public:
                           "Use pixels as scroll unit", nullptr },
                         { "scrollback-lines", 'n', 0, G_OPTION_ARG_INT, &scrollback_lines,
                           "Specify the number of scrollback-lines (-1 for infinite)", nullptr },
+                        { "sixel", 0, G_OPTION_FLAG_REVERSE, G_OPTION_ARG_NONE, &no_sixel,
+                          "Enable SIXEL images", nullptr },
                         { "title", 0, 0, G_OPTION_ARG_STRING, &title, "Set the initial title of the window", "TITLE" },
                         { "transparent", 'T', 0, G_OPTION_ARG_INT, &transparency_percent,
                           "Enable the use of a transparent background", "0..100" },
@@ -655,12 +772,22 @@ public:
                           "Use a GtkScrolledWindow", nullptr },
                         { "shell", 'S', G_OPTION_FLAG_REVERSE | G_OPTION_FLAG_HIDDEN,
                           G_OPTION_ARG_NONE, &no_shell, nullptr, nullptr },
-#ifdef VTE_DEBUG
+#if VTE_DEBUG
                         { "test-mode", 0, 0, G_OPTION_ARG_NONE, &test_mode,
                           "Enable test mode", nullptr },
 #endif
                         { "use-theme-colors", 0, 0, G_OPTION_ARG_NONE, &use_theme_colors,
                           "Use foreground and background colors from the gtk+ theme", nullptr },
+
+                        { "xalign", 0, 0, G_OPTION_ARG_CALLBACK, (void*)parse_xalign,
+                          "Horizontal alignment (start|end|center)", "ALIGN" },
+                        { "yalign", 0, 0, G_OPTION_ARG_CALLBACK, (void*)parse_yalign,
+                          "Vertical alignment (fill|start|end|center)", "ALIGN" },
+                        { "no-xfill", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE, &no_xfill,
+                          "No horizontal fillment", nullptr },
+                        { "no-yfill", 0, 0, G_OPTION_ARG_NONE, &no_yfill,
+                          "No vertical fillment", nullptr },
+
 
 #if VTE_GTK == 3
                         { "no-argb-visual", 0, 0, G_OPTION_ARG_NONE, &no_argb_visual,
@@ -718,7 +845,6 @@ public:
 
                 if (use_scrolled_window) {
                         no_geometry_hints = true;
-                        no_scrollbar = true;
                 }
 
 #if VTE_GTK == 4
@@ -731,7 +857,7 @@ public:
 
                 return rv;
         }
-};
+}; // class Options
 
 Options options{}; /* global */
 
@@ -1019,8 +1145,6 @@ vteapp_search_popover_class_init(VteappSearchPopoverClass* klass)
         gtk_widget_class_bind_template_child(widget_class, VteappSearchPopover, entire_word_checkbutton);
         gtk_widget_class_bind_template_child(widget_class, VteappSearchPopover, regex_checkbutton);
         gtk_widget_class_bind_template_child(widget_class, VteappSearchPopover, wrap_around_checkbutton);
-
-        gtk_widget_class_set_css_name(widget_class, "vteapp-search-popover");
 }
 
 static GtkWidget*
@@ -1116,11 +1240,11 @@ vteapp_terminal_unrealize(GtkWidget* widget)
         GTK_WIDGET_CLASS(vteapp_terminal_parent_class)->unrealize(widget);
 }
 
+#if VTE_GTK == 3
 static void
 vteapp_terminal_draw_background(GtkWidget* widget,
                                 cairo_t* cr)
 {
-#if VTE_GTK == 3
         auto terminal = VTEAPP_TERMINAL(widget);
 
         if (terminal->background_pattern != nullptr) {
@@ -1145,24 +1269,18 @@ vteapp_terminal_draw_background(GtkWidget* widget,
                 cairo_paint_with_alpha(cr, options.get_alpha_bg_for_draw());
 
         }
-#endif /* VTE_GTK == 3 */
 }
+#endif /* VTE_GTK == 3 */
 
 #if VTE_GTK == 4
-
 static void
 vteapp_terminal_draw_background(GtkWidget* widget,
                                 GtkSnapshot* snapshot)
 {
-        auto grect = GRAPHENE_RECT_INIT(float(0), float(0),
-                                        float(gtk_widget_get_allocated_width(widget)),
-                                        float(gtk_widget_get_allocated_height(widget)));
-        auto cr = vte::take_freeable(gtk_snapshot_append_cairo(snapshot, &grect));
-        vteapp_terminal_draw_background(widget, cr.get());
 }
-
 #endif /* VTE_GTK  == 4 */
 
+#if VTE_GTK == 3
 static void
 vteapp_terminal_draw_backdrop(GtkWidget* widget,
                               cairo_t* cr)
@@ -1178,21 +1296,23 @@ vteapp_terminal_draw_backdrop(GtkWidget* widget,
                 cairo_paint(cr);
         }
 }
-
-#if VTE_GTK == 4
-
+#elif VTE_GTK == 4
 static void
 vteapp_terminal_draw_backdrop(GtkWidget* widget,
                               GtkSnapshot* snapshot)
 {
-        auto grect = GRAPHENE_RECT_INIT(float(0), float(0),
-                                        float(gtk_widget_get_allocated_width(widget)),
-                                        float(gtk_widget_get_allocated_height(widget)));
-        auto cr = vte::take_freeable(gtk_snapshot_append_cairo(snapshot, &grect));
-        vteapp_terminal_draw_backdrop(widget, cr.get());
-}
+        static const GdkRGBA rgba = {0, 0, 0, BACKDROP_ALPHA};
+        auto terminal = VTEAPP_TERMINAL(widget);
 
-#endif /* VTE_GTK  == 4 */
+        if (terminal->use_backdrop && terminal->has_backdrop) {
+                auto const rect = GRAPHENE_RECT_INIT(.0f,
+                                                     .0f,
+                                                     float(gtk_widget_get_allocated_width(widget)),
+                                                     float(gtk_widget_get_allocated_height(widget)));
+                gtk_snapshot_append_color(snapshot, &rgba, &rect);
+        }
+}
+#endif
 
 #if VTE_GTK == 3
 
@@ -1333,8 +1453,6 @@ vteapp_terminal_class_init(VteappTerminalClass *klass)
         widget_class->state_flags_changed = vteapp_terminal_state_flags_changed;
         widget_class->system_setting_changed = vteapp_terminal_system_setting_changed;
 #endif
-
-        gtk_widget_class_set_css_name(widget_class, "vteapp-terminal");
 }
 
 static void
@@ -1687,6 +1805,7 @@ vteapp_window_launch_argv(VteappWindow* window,
                           GError** error)
 {
         auto const spawn_flags = GSpawnFlags(G_SPAWN_SEARCH_PATH_FROM_ENVP |
+                                             VTE_SPAWN_NO_PARENT_ENVV |
                                              (options.no_systemd_scope ? VTE_SPAWN_NO_SYSTEMD_SCOPE : 0) |
                                              (options.require_systemd_scope ? VTE_SPAWN_REQUIRE_SYSTEMD_SCOPE : 0));
         auto fds = options.fds();
@@ -1695,7 +1814,7 @@ vteapp_window_launch_argv(VteappWindow* window,
                                           VTE_PTY_DEFAULT,
                                           options.working_directory,
                                           argv,
-                                          options.environment,
+                                          options.environment_for_spawn().get(),
                                           fds.data(), fds.size(),
                                           map_fds.data(), map_fds.size(),
                                           spawn_flags,
@@ -1961,38 +2080,61 @@ window_action_fullscreen_state_cb (GSimpleAction *action,
         /* The window-state-changed callback will update the action's actual state */
 }
 
-#if VTE_GTK == 3
-static bool
-vteapp_window_show_context_menu(VteappWindow* window,
-                                guint button,
-                                guint32 timestamp,
-                                GdkEvent* event)
+static void
+window_setup_context_menu_cb(VteTerminal* terminal,
+                             VteEventContext const* context,
+                             VteappWindow* window)
 {
         if (options.no_context_menu)
-                return false;
+                return;
 
-        auto menu = g_menu_new();
-        g_menu_append(menu, "_Copy", "win.copy::text");
-        g_menu_append(menu, "Copy As _HTML", "win.copy::html");
+        // context == nullptr when the menu is dismissed after being shown
+        if (!context) {
+                verbose_print("setup-context-menu reset\n");
+                vte_terminal_set_context_menu_model(terminal, nullptr);
+                return;
+        }
 
-        if (event != nullptr)
-        {
+        verbose_print("setup-context-menu\n");
+
+        auto menu = vte::glib::take_ref(g_menu_new());
+        g_menu_append(menu.get(), "_Copy", "win.copy::text");
+        g_menu_append(menu.get(), "Copy As _HTML", "win.copy::html");
+
+#if VTE_GTK == 4
+        double x, y;
+#endif
+        if (
+#if VTE_GTK == 3
+            auto const event = vte_event_context_get_event(context)
+#elif VTE_GTK == 4
+            vte_event_context_get_coordinates(context, &x, &y)
+#endif // VTE_GTK
+            ) {
+#if VTE_GTK == 3
                 auto hyperlink = vte::glib::take_string(vte_terminal_hyperlink_check_event(window->terminal, event));
+#elif VTE_GTK == 4
+                auto hyperlink = vte::glib::take_string(vte_terminal_check_hyperlink_at(window->terminal, x, y));
+#endif
                 if (hyperlink) {
                         verbose_print("Hyperlink: %s\n", hyperlink.get());
                         auto target = g_variant_new_string(hyperlink.get()); /* floating */
                         auto item = vte::glib::take_ref(g_menu_item_new("Copy _Hyperlink", nullptr));
                         g_menu_item_set_action_and_target_value(item.get(), "win.copy-match", target);
-                        g_menu_append_item(menu, item.get());
+                        g_menu_append_item(menu.get(), item.get());
                 }
 
+#if VTE_GTK == 3
                 auto match = vte::glib::take_string(vte_terminal_match_check_event(window->terminal, event, nullptr));
+#elif VTE_GTK == 4
+                auto match = vte::glib::take_string(vte_terminal_check_match_at(window->terminal, x, y, nullptr));
+#endif // VTE_GTK
                 if (match) {
                         verbose_print("Match: %s\n", match.get());
                         auto target = g_variant_new_string(match.get()); /* floating */
                         auto item = vte::glib::take_ref(g_menu_item_new("Copy _Match", nullptr));
                         g_menu_item_set_action_and_target_value(item.get(), "win.copy-match", target);
-                        g_menu_append_item(menu, item.get());
+                        g_menu_append_item(menu.get(), item.get());
                 }
 
                 /* Test extra match API */
@@ -2004,11 +2146,18 @@ vteapp_window_show_context_menu(VteappWindow* window,
                 error.assert_no_error();
 
                 VteRegex* regexes[1] = {regex.get()};
+#if VTE_GTK == 3
                 vte_terminal_event_check_regex_simple(window->terminal, event,
                                                       regexes, G_N_ELEMENTS(regexes),
                                                       0,
                                                       &extra_match);
+#elif VTE_GTK == 4
+                vte_terminal_check_regex_simple_at(window->terminal, x, y,
+                                                   regexes, G_N_ELEMENTS(regexes),
+                                                   0,
+                                                   &extra_match);
 
+#endif // VTE_GTK
                 if (extra_match != nullptr &&
                     (extra_subst = vte_regex_substitute(regex.get(), extra_match, "$2 $1",
                                                         PCRE2_SUBSTITUTE_EXTENDED |
@@ -2027,51 +2176,18 @@ vteapp_window_show_context_menu(VteappWindow* window,
                 g_free(extra_subst);
         }
 
-        g_menu_append(menu, "_Paste", "win.paste");
+        g_menu_append(menu.get(), "_Paste", "win.paste");
 
+#if VTE_GTK == 3
         auto const fullscreen = (window->window_state & GDK_WINDOW_STATE_FULLSCREEN) != 0;
+#elif VTE_GTK == 4
+        auto const fullscreen = gtk_window_is_fullscreen(GTK_WINDOW(window));
+#endif // VTE_GTK
         if (fullscreen)
-                g_menu_append(menu, "_Fullscreen", "win.fullscreen");
+                g_menu_append(menu.get(), "_Fullscreen", "win.fullscreen");
 
-        auto popup = gtk_menu_new_from_model(G_MENU_MODEL(menu));
-        gtk_menu_attach_to_widget(GTK_MENU(popup), GTK_WIDGET(window->terminal), nullptr);
-        gtk_menu_popup(GTK_MENU(popup), nullptr, nullptr, nullptr, nullptr, button, timestamp);
-        if (button == 0)
-                gtk_menu_shell_select_first(GTK_MENU_SHELL(popup), true);
-
-        return true;
+        vte_terminal_set_context_menu_model(terminal, G_MENU_MODEL(menu.get()));
 }
-#endif /* VTE_GTK */
-
-#if VTE_GTK == 3
-
-static gboolean
-window_popup_menu_cb(GtkWidget* widget,
-                     VteappWindow* window)
-{
-        auto const timestamp = gtk_get_current_event_time();
-
-        return vteapp_window_show_context_menu(window, 0, timestamp , nullptr);
-}
-// FIXMEgtk4
-
-#endif /* VTE_GTK == 3 */
-
-#if VTE_GTK == 3
-
-static gboolean
-window_button_press_cb(GtkWidget* widget,
-                       GdkEventButton* event,
-                       VteappWindow* window)
-{
-        if (event->button != GDK_BUTTON_SECONDARY)
-                return false;
-
-        return vteapp_window_show_context_menu(window, event->button, event->time,
-                                               reinterpret_cast<GdkEvent*>(event));
-}
-
-#endif /* VTE_GTK == 3 */
 
 static void
 window_cell_size_changed_cb(VteTerminal* term,
@@ -2398,7 +2514,7 @@ vteapp_window_constructed(GObject *object)
                 gtk_widget_set_margin_bottom(GTK_WIDGET(window->terminal), margin);
         }
 
-        if (!options.no_scrollbar) {
+        if (!options.no_scrollbar && !options.use_scrolled_window) {
                 auto vadj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(window->terminal));
 #if VTE_GTK == 3
                 gtk_range_set_adjustment(GTK_RANGE(window->scrollbar), vadj);
@@ -2407,7 +2523,7 @@ vteapp_window_constructed(GObject *object)
 #endif
         }
 
-        if (options.no_scrollbar) {
+        if (options.no_scrollbar || options.use_scrolled_window) {
 #if VTE_GTK == 3
                 gtk_widget_destroy(GTK_WIDGET(window->scrollbar));
 #elif VTE_GTK == 4
@@ -2477,12 +2593,7 @@ vteapp_window_constructed(GObject *object)
         }
 
         /* Signals */
-#if VTE_GTK == 3
-        g_signal_connect(window->terminal, "popup-menu", G_CALLBACK(window_popup_menu_cb), window);
-        g_signal_connect(window->terminal, "button-press-event", G_CALLBACK(window_button_press_cb), window);
-#elif VTE_GTK == 4
-        // FIXMEgtk4
-#endif
+        g_signal_connect(window->terminal, "setup-context-menu", G_CALLBACK(window_setup_context_menu_cb), window);
         g_signal_connect(window->terminal, "char-size-changed", G_CALLBACK(window_cell_size_changed_cb), window);
         g_signal_connect(window->terminal, "child-exited", G_CALLBACK(window_child_exited_cb), window);
         g_signal_connect(window->terminal, "decrease-font-size", G_CALLBACK(window_decrease_font_size_cb), window);
@@ -2530,14 +2641,24 @@ vteapp_window_constructed(GObject *object)
         vte_terminal_set_cursor_shape(window->terminal, options.cursor_shape);
         vte_terminal_set_enable_bidi(window->terminal, !options.no_bidi);
         vte_terminal_set_enable_shaping(window->terminal, !options.no_shaping);
+        vte_terminal_set_enable_sixel(window->terminal, !options.no_sixel);
         vte_terminal_set_enable_fallback_scrolling(window->terminal, !options.no_fallback_scrolling);
         vte_terminal_set_mouse_autohide(window->terminal, true);
         vte_terminal_set_rewrap_on_resize(window->terminal, !options.no_rewrap);
+        vte_terminal_set_scroll_on_insert(window->terminal, true);
         vte_terminal_set_scroll_on_output(window->terminal, false);
         vte_terminal_set_scroll_on_keystroke(window->terminal, true);
         vte_terminal_set_scroll_unit_is_pixels(window->terminal, options.scroll_unit_is_pixels);
         vte_terminal_set_scrollback_lines(window->terminal, options.scrollback_lines);
         vte_terminal_set_text_blink_mode(window->terminal, options.text_blink_mode);
+        if (options.xalign != VteAlign(-1))
+                vte_terminal_set_xalign(window->terminal, options.xalign);
+        if (options.yalign != VteAlign(-1))
+                vte_terminal_set_yalign(window->terminal, options.yalign);
+        if (options.no_xfill)
+                vte_terminal_set_xfill(window->terminal, false);
+        if (options.no_yfill)
+                vte_terminal_set_yfill(window->terminal, false);
 
         /* Style */
         if (options.font_string != nullptr) {
@@ -2575,6 +2696,21 @@ vteapp_window_constructed(GObject *object)
                 auto sw = gtk_scrolled_window_new();
                 gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sw), GTK_WIDGET(window->terminal));
 #endif /* VTE_GTK */
+                gtk_scrolled_window_set_kinetic_scrolling(GTK_SCROLLED_WINDOW(sw),
+                                                          !options.no_kinetic_scrolling);
+
+                auto vpolicy = GTK_POLICY_ALWAYS;
+                if (options.no_scrollbar)
+                        vpolicy = GTK_POLICY_EXTERNAL;
+                else if (options.overlay_scrollbar)
+                        vpolicy = GTK_POLICY_AUTOMATIC;
+
+                gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
+                                               GTK_POLICY_NEVER, // hpolicy
+                                               vpolicy);
+                gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(sw),
+                                                          options.overlay_scrollbar);
+
                 gtk_grid_attach(GTK_GRID(window->window_grid), sw,
                                 0, 0, 1, 1);
                 gtk_widget_set_halign(GTK_WIDGET(sw), GTK_ALIGN_FILL);
@@ -2622,6 +2758,15 @@ vteapp_window_dispose(GObject *object)
 #endif /* VTE_GTK */
                 window->search_popover = nullptr;
         }
+
+        // Disconnect all signal handlers from the terminal
+        g_signal_handlers_disconnect_matched(window->terminal,
+                                             GSignalMatchType(G_SIGNAL_MATCH_DATA),
+                                             0, // signal id
+                                             0, // detail quark
+                                             nullptr, // closure
+                                             nullptr, // func
+                                             window);
 
         G_OBJECT_CLASS(vteapp_window_parent_class)->dispose(object);
 }
@@ -2723,7 +2868,6 @@ vteapp_window_class_init(VteappWindowClass* klass)
 #endif
 
         gtk_widget_class_set_template_from_resource(widget_class, "/org/gnome/vte/app/ui/window.ui");
-        gtk_widget_class_set_css_name(widget_class, "vteapp-window");
 
         gtk_widget_class_bind_template_child(widget_class, VteappWindow, window_grid);
         gtk_widget_class_bind_template_child(widget_class, VteappWindow, scrollbar);
@@ -3021,7 +3165,7 @@ main(int argc,
                gdk_window_set_debug_updates(true);
 #endif /* VTE_GTK == 3 */
 
-#ifdef VTE_DEBUG
+#if VTE_DEBUG
        if (options.test_mode) {
                vte_set_test_flags(VTE_TEST_FLAGS_ALL);
                options.allow_window_ops = true;

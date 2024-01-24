@@ -48,6 +48,7 @@ namespace platform {
 class EventBase {
         friend class vte::platform::Widget;
         friend class Terminal;
+        friend class EventContext;
 
 public:
         enum class Type {
@@ -87,6 +88,7 @@ private:
 class KeyEvent : public EventBase {
         friend class vte::platform::Widget;
         friend class Terminal;
+        friend class EventContext;
 
 protected:
 
@@ -128,14 +130,15 @@ public:
         constexpr auto is_key_press()   const noexcept { return type() == Type::eKEY_PRESS;   }
         constexpr auto is_key_release() const noexcept { return type() == Type::eKEY_RELEASE; }
 
-        bool matches(unsigned keyval,
-                     unsigned modifiers) const noexcept
+        bool matches(unsigned key,
+                     unsigned mods) const noexcept
         {
 #if VTE_GTK == 3
-                return false; // FIXMEgtk3
+                return keyval() == key &&
+                        (modifiers() & gtk_accelerator_get_default_mod_mask()) == mods;
 #elif VTE_GTK == 4
                 return gdk_key_event_matches(platform_event(),
-                                             keyval, GdkModifierType(modifiers)) == GDK_KEY_MATCH_EXACT;
+                                             key, GdkModifierType(mods)) == GDK_KEY_MATCH_EXACT;
 #endif
         }
 
@@ -151,6 +154,7 @@ private:
 class MouseEvent : public EventBase {
         friend class vte::platform::Widget;
         friend class Terminal;
+        friend class EventContext;
 
 public:
         enum class Button {
@@ -166,13 +170,15 @@ protected:
 
         MouseEvent() noexcept = default;
 
-        constexpr MouseEvent(Type type,
+        constexpr MouseEvent(GdkEvent* gdk_event,
+                             Type type,
                              int press_count,
                              unsigned modifiers,
                              Button button,
                              double x,
                              double y) noexcept
                 : EventBase{type},
+                  m_platform_event{gdk_event},
                   m_press_count{press_count},
                   m_modifiers{modifiers},
                   m_button{button},
@@ -180,6 +186,8 @@ protected:
                   m_y{y}
         {
         }
+
+        constexpr auto platform_event() const noexcept { return m_platform_event; }
 
 public:
         ~MouseEvent() noexcept = default;
@@ -203,6 +211,7 @@ public:
         constexpr auto is_mouse_release()      const noexcept { return type() == Type::eMOUSE_RELEASE;      }
 
 private:
+        GdkEvent* m_platform_event;
         int m_press_count;
         unsigned m_modifiers;
         Button m_button;
@@ -213,6 +222,7 @@ private:
 class ScrollEvent : public EventBase {
         friend class vte::platform::Widget;
         friend class Terminal;
+        friend class EventContext;
 
 protected:
 
@@ -246,9 +256,99 @@ private:
         double m_dy;
 }; // class ScrollEvent
 
+class EventContext {
+private:
+        int m_button{-1};
+#if VTE_GTK == 3
+        GdkEvent* m_platform_event{nullptr}; // unowned
+#elif VTE_GTK == 4
+        bool m_xy_set{false};
+        double m_x{0};
+        double m_y{0};
+        bool m_is_long_press{false};
+#endif // VTE_GTK
+
+public:
+        ~EventContext() = default;
+
+        EventContext(EventContext const&) = delete;
+        EventContext(EventContext&&) = delete;
+
+        EventContext& operator=(EventContext const&) = delete;
+        EventContext& operator=(EventContext&&) = delete;
+
+#if VTE_GTK == 3
+        EventContext() noexcept :
+                m_button{-1},
+                m_platform_event{gtk_get_current_event()}
+        {
+        }
+#elif VTE_GTK == 4
+        constexpr EventContext() noexcept = default;
+#endif
+
+#if VTE_GTK == 4
+        constexpr EventContext(double x,
+                               double y,
+                               bool is_long_press) :
+                m_xy_set{true},
+                m_x{x},
+                m_y{y},
+                m_is_long_press{is_long_press}
+        {
+        }
+#endif // VTE_GTK == 4
+
+        explicit constexpr EventContext(MouseEvent const& event) noexcept :
+                m_button{int(event.button())},
+#if VTE_GTK == 3
+                m_platform_event{event.platform_event()}
+#elif VTE_GTK == 4
+                m_xy_set{true},
+                m_x{event.x()},
+                m_y{event.y()}
+#endif
+        {
+        }
+
+        explicit constexpr EventContext(KeyEvent const& event) noexcept :
+                m_button{-1},
+#if VTE_GTK == 3
+                  m_platform_event{event.platform_event()}
+#elif VTE_GTK == 4
+                  m_xy_set{false}
+#endif
+        {
+        }
+
+        constexpr auto button()    const noexcept { return m_button;    }
+#if VTE_GTK == 3
+        constexpr auto platform_event() const noexcept { return m_platform_event; }
+#elif VTE_GTK == 4
+        constexpr auto xy_set() const noexcept { return m_xy_set; }
+        constexpr auto x()      const noexcept { return m_x;      }
+        constexpr auto y()      const noexcept { return m_y;      }
+        constexpr auto get_coords(double* _x,
+                                  double* _y) const noexcept
+        {
+                if (!xy_set())
+                        return false;
+                if (_x)
+                        *_x = x();
+                if (_y)
+                        *_y = y();
+                return true;
+        }
+        constexpr auto is_long_press() const noexcept { return m_is_long_press; }
+#endif // VTE_GTK
+
+}; // class EventContext
+
 class Widget : public std::enable_shared_from_this<Widget> {
 public:
         friend class vte::terminal::Terminal;
+
+        static Widget* from_terminal(VteTerminal*);
 
         Widget(VteTerminal* t);
         ~Widget() noexcept;
@@ -264,6 +364,8 @@ public:
 
         inline constexpr vte::terminal::Terminal* terminal() const noexcept { return m_terminal; }
 
+        inline int scale_factor() const noexcept { return gtk_widget_get_scale_factor(gtk()); }
+
         void constructed() noexcept;
         void dispose() noexcept;
         void realize() noexcept;
@@ -278,7 +380,7 @@ public:
                            GtkTooltip* tooltip) noexcept;
 
         void connect_settings();
-        void padding_changed();
+        bool padding_changed() noexcept;
         void settings_changed();
 
 #if VTE_GTK == 3
@@ -315,11 +417,16 @@ public:
                      int* minimum,
                      int* natural,
                      int* minimum_baseline,
-                     int* natural_baseline);
+                     int* natural_baseline) noexcept;
         std::pair<bool, bool> compute_expand();
         void css_changed(GtkCssStyleChange* change);
+        void root_realize();
+        void root_unrealize();
+        void root_surface_state_notify();
+        void root_surface_focused_changed();
+        auto root_focused() const noexcept { return (m_root_surface_state & GDK_TOPLEVEL_STATE_FOCUSED) != 0; }
         void system_setting_changed(GtkSystemSetting setting);
-        void snapshot(GtkSnapshot* snapshot_object);
+        void snapshot(GtkSnapshot* snapshot) noexcept { terminal()->widget_snapshot(snapshot); }
         bool contains(double x,
                       double y);
         void display_changed() noexcept;
@@ -367,6 +474,10 @@ public:
                                             double y,
                                             unsigned button,
                                             GdkEventSequence* sequence);
+        void gesture_long_press_pressed(GtkGestureLongPress* gesture,
+                                        double x,
+                                        double y);
+        void gesture_long_press_cancelled(GtkGestureLongPress* gesture);
 #endif /* VTE_GTK == 4 */
 
         void grab_focus() noexcept { gtk_widget_grab_focus(gtk()); }
@@ -378,8 +489,10 @@ public:
                                   ClipboardFormat format) noexcept;
         void clipboard_request_text(ClipboardType type) noexcept;
         void clipboard_set_text(ClipboardType type,
-                                std::string_view const& str) noexcept;
+                                char const* str,
+                                size_t size) noexcept;
 
+        void paste_text(std::string_view const& text) { m_terminal->widget_paste(text); }
         void paste(vte::platform::ClipboardType type) { clipboard_request_text(type); }
         void copy(vte::platform::ClipboardType type,
                   vte::platform::ClipboardFormat format) noexcept { m_terminal->widget_copy(type, format); }
@@ -468,9 +581,118 @@ public:
                 return terminal()->hyperlink_check(mouse_event_from_gdk(event));
         }
 
+#elif VTE_GTK == 4
+
+        char* regex_match_check_at(double x,
+                                   double y,
+                                   int* tag)
+        {
+                return terminal()->regex_match_check_at(x, y, tag);
+        }
+
+        bool regex_match_check_extra_at(double x,
+                                        double y,
+                                        vte::base::Regex const** regexes,
+                                        size_t n_regexes,
+                                        uint32_t match_flags,
+                                        char** matches)
+        {
+                return terminal()->regex_match_check_extra_at(x, y,
+                                                              regexes, n_regexes,
+                                                              match_flags, matches);
+        }
+
+        char* hyperlink_check_at(double x,
+                                 double y)
+        {
+                return terminal()->hyperlink_check_at(x, y);
+        }
+
 #endif /* VTE_GTK */
 
         bool should_emit_signal(int id) noexcept;
+
+        bool set_sixel_enabled(bool enabled) noexcept { return m_terminal->set_sixel_enabled(enabled); }
+        bool sixel_enabled() const noexcept { return m_terminal->sixel_enabled(); }
+
+        constexpr auto xalign() const noexcept { return m_xalign; }
+        constexpr auto yalign() const noexcept { return m_yalign; }
+        constexpr auto xfill() const noexcept { return m_xfill; }
+        constexpr auto yfill() const noexcept { return m_yfill; }
+
+        bool set_xalign(VteAlign align) noexcept
+        {
+                if (align == m_xalign)
+                        return false;
+
+                m_xalign = VteAlign(align);
+                gtk_widget_queue_allocate(gtk());
+                return true;
+        }
+
+        bool set_yalign(VteAlign align) noexcept
+        {
+                if (align == m_yalign)
+                        return false;
+
+                m_yalign = align;
+                gtk_widget_queue_allocate(gtk());
+                return true;
+        }
+
+        bool set_xfill(bool fill) noexcept
+        {
+                if (fill == m_xfill)
+                        return false;
+
+                m_xfill = fill;
+                gtk_widget_queue_allocate(gtk());
+                return true;
+        }
+
+        bool set_yfill(bool fill) noexcept
+        {
+                if (fill == m_yfill)
+                        return false;
+
+                m_yfill = fill;
+                gtk_widget_queue_allocate(gtk());
+                return true;
+        }
+
+        bool set_context_menu_model(vte::glib::RefPtr<GMenuModel> model)
+        {
+                if (model == m_context_menu_model)
+                        return false;
+
+                m_context_menu_model = std::move(model);
+                return true;
+        }
+
+        GMenuModel* get_context_menu_model() const noexcept
+        {
+                return m_context_menu_model.get();
+        }
+
+        bool set_context_menu(vte::glib::RefPtr<GtkWidget> menu);
+
+        void unset_context_menu(GtkWidget* widget,
+                                bool deactivate,
+                                bool notify = true);
+
+#if VTE_GTK == 4
+        void unset_context_menu_on_idle();
+        void context_menu_closed(GtkWidget* widget);
+#endif
+
+        GtkWidget* get_context_menu() const noexcept
+        {
+                return m_context_menu.get();
+        }
+
+        bool show_context_menu(EventContext const& context);
+
+        void emit_setup_context_menu(EventContext const* context);
 
 protected:
 
@@ -527,7 +749,7 @@ private:
 #if VTE_GTK == 3
         unsigned read_modifiers_from_gdk(GdkEvent* event) const noexcept;
         MouseEvent mouse_event_from_gdk(GdkEvent* event) const /* throws */;
-        ScrollEvent scroll_event_from_gdk(GdkEvent* event) const /* throws */;
+        std::optional<ScrollEvent> scroll_event_from_gdk(GdkEvent* event) const;
 #elif VTE_GTK == 4
         MouseEvent mouse_event_from_gesture_click(EventBase::Type type,
                                                   GtkGestureClick* gesture,
@@ -581,6 +803,26 @@ private:
         unsigned m_vscroll_policy:1{GTK_SCROLL_NATURAL};
         unsigned m_scroll_unit_is_pixels:1{false};
         unsigned m_changing_scroll_position:1{false};
+
+        VteAlign m_xalign{VTE_ALIGN_START};
+        VteAlign m_yalign{VTE_ALIGN_START};
+        bool m_xfill{true};
+        bool m_yfill{true};
+
+#if VTE_GTK == 4
+        GdkToplevelState m_root_surface_state{GdkToplevelState(0)};
+        long m_root_realize_id{0};
+        long m_root_unrealize_id{0};
+        long m_root_surface_state_notify_id{0};
+        bool m_inside_scrolled_window{false};
+#endif /* VTE_GTK == 4 */
+
+        vte::glib::RefPtr<GMenuModel> m_context_menu_model;
+        vte::glib::RefPtr<GtkWidget> m_context_menu;
+        vte::glib::RefPtr<GtkWidget> m_menu_showing;
+#if VTE_GTK == 4
+        unsigned m_context_menu_unset_on_idle_source{0};
+#endif
 };
 
 } // namespace platform

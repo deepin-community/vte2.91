@@ -39,7 +39,7 @@
 
 #include "glib-glue.hh"
 
-#ifdef WITH_SYSTEMD
+#if WITH_SYSTEMD
 #include "systemd.hh"
 #endif
 
@@ -68,6 +68,20 @@ set_cloexec_cb(void* data,
 static int
 cloexec_from(int fd)
 {
+#ifdef CLOSE_RANGE_CLOEXEC
+        /* First, try close_range(CLOEXEC) which is faster than the methods
+         * below, and works even if /proc is not available.
+         */
+        auto const res = close_range(fd, -1, CLOSE_RANGE_CLOEXEC);
+        if (res == 0)
+                return 0;
+        if (res == -1 &&
+            errno != ENOSYS /* old kernel, or not supported on this platform */ &&
+            errno != EINVAL /* flags not supported */)
+                return res;
+#endif /* CLOSE_RANGE_CLOEXEC */
+
+        /* Fall back to fdwalk */
         return fdwalk(set_cloexec_cb, &fd);
 }
 
@@ -405,7 +419,7 @@ SpawnContext::exec(vte::libc::FD& child_report_error_pipe_write,
         /* Assign FDs */
         auto const n_fd_map = m_fd_map.size();
         for (auto i = size_t{0}; i < n_fd_map; ++i) {
-                auto [source_fd, target_fd] = m_fd_map[i];
+                auto const [source_fd, target_fd] = m_fd_map[i];
 
                 /* -1 means the source_fd is only in the map so that it can
                  * be checked for conflicts with other target FDs. It may be
@@ -427,7 +441,10 @@ SpawnContext::exec(vte::libc::FD& child_report_error_pipe_write,
                                 if (from_fd != target_fd)
                                         continue;
 
-                                auto new_from_fd = vte::libc::fd_dup_cloexec(from_fd, target_fd + 1);
+                                /* Duplicate from_fd to any free FD number, which will
+                                 * be != from_fd/target_fd.
+                                 */
+                                auto new_from_fd = vte::libc::fd_dup_cloexec(from_fd, 3);
                                 if (new_from_fd == -1)
                                         return ExecError::DUP;
 
@@ -448,23 +465,25 @@ SpawnContext::exec(vte::libc::FD& child_report_error_pipe_write,
                                         (void)close(from_fd);
                                 }
 
+                                /* We have replaced *all* instances of target_fd as a
+                                 * source with new_from_fd, so we don't need to continue
+                                 * with the loop.
+                                 */
                                 break;
                         }
-                }
 
-                /* source_fd may have been changed by the loop above */
-                source_fd = m_fd_map[i].first;
-
-                if (target_fd == source_fd) {
+                        /* Now we know that target_fd can be safely overwritten. */
+                        if (vte::libc::fd_dup2(source_fd, target_fd) == -1)
+                                return ExecError::DUP2;
+                } else {
                         /* Already assigned correctly, but need to remove FD_CLOEXEC */
                         if (vte::libc::fd_unset_cloexec(target_fd) == -1)
                                 return ExecError::UNSET_CLOEXEC;
 
-                } else {
-                        /* Now we know that target_fd can be safely overwritten. */
-                        if (vte::libc::fd_dup2(source_fd, target_fd) == -1)
-                                return ExecError::DUP2;
                 }
+
+                /* Mark source in the map as done */
+                m_fd_map[i].first = -1;
         }
 
         /* Finally call an extra child setup */
@@ -510,7 +529,7 @@ SpawnOperation::~SpawnOperation()
 bool
 SpawnOperation::prepare(vte::glib::Error& error)
 {
-#ifndef WITH_SYSTEMD
+#if !WITH_SYSTEMD
         if (context().require_systemd_scope()) {
                 error.set_literal(G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
                                   "systemd not available");
@@ -694,7 +713,7 @@ SpawnOperation::run(vte::glib::Error& error) noexcept
 
         /* Spawn succeeded */
 
-#ifdef WITH_SYSTEMD
+#if WITH_SYSTEMD
         if (context().systemd_scope() &&
             !vte::systemd::create_scope_for_pid_sync(m_pid,
                                                      m_timeout, // FIXME: recalc timeout

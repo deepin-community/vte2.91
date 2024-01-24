@@ -29,6 +29,7 @@ debug_sources = files(
 )
 
 glib_glue_sources = files(
+  'glib-glue.cc',
   'glib-glue.hh',
 )
 
@@ -60,6 +61,7 @@ modes_sources = files(
 modes_sources += custom_target(
   'modes',
   command: [
+    python,
     files('modes.py'),
     '--destdir', '@OUTDIR@',
   ],
@@ -92,6 +94,7 @@ parser_sources = files(
 parser_sources += custom_target(
   'parser-seq',
   command: [
+    python,
     files('parser-seq.py'),
     '--destdir', '@OUTDIR@',
   ],
@@ -105,6 +108,11 @@ parser_sources += custom_target(
     'parser-esc.hh',
     'parser-sci.hh',
   ],
+)
+
+pastify_sources = files(
+  'pastify.cc',
+  'pastify.hh',
 )
 
 pcre2_glue_sources = files(
@@ -127,6 +135,20 @@ regex_sources = files(
   'regex.hh'
 )
 
+sixel_parser_sources = files(
+  'sixel-parser.hh',
+)
+
+sixel_context_sources = files(
+  'sixel-context.cc',
+  'sixel-context.hh',
+)
+
+sixel_sources = sixel_parser_sources + sixel_context_sources + files(
+  'image.cc',
+  'image.hh',
+)
+
 std_glue_sources = files(
   'std-glue.hh',
 )
@@ -134,6 +156,10 @@ std_glue_sources = files(
 systemd_sources = files(
   'systemd.cc',
   'systemd.hh',
+)
+
+unicode_width_sources = files(
+  'unicode-width.hh',
 )
 
 utf8_sources = files(
@@ -145,10 +171,11 @@ vte_glue_sources = files(
   'vte-glue.hh',
 )
 
-libvte_common_sources = config_sources + debug_sources + glib_glue_sources + gtk_glue_sources + libc_glue_sources + modes_sources + pango_glue_sources + parser_sources + pcre2_glue_sources + pty_sources + refptr_sources + regex_sources + std_glue_sources + utf8_sources + vte_glue_sources + files(
+libvte_common_sources = config_sources + debug_sources + glib_glue_sources + gtk_glue_sources + libc_glue_sources + modes_sources + pango_glue_sources + parser_sources + pastify_sources + pcre2_glue_sources + pty_sources + refptr_sources + regex_sources + std_glue_sources + utf8_sources + vte_glue_sources + files(
   'attr.hh',
   'bidi.cc',
   'bidi.hh',
+  'box-drawing.hh',
   'buffer.h',
   'cairo-glue.hh',
   'caps.hh',
@@ -159,8 +186,8 @@ libvte_common_sources = config_sources + debug_sources + glib_glue_sources + gtk
   'clipboard-gtk.hh',
   'color-triple.hh',
   'cxx-utils.hh',
-  'drawing-cairo.cc',
-  'drawing-cairo.hh',
+  'drawing-context.cc',
+  'drawing-context.hh',
   'fonts-pangocairo.cc',
   'fonts-pangocairo.hh',
   'gobject-glue.hh',
@@ -178,6 +205,7 @@ libvte_common_sources = config_sources + debug_sources + glib_glue_sources + gtk
   'ringview.hh',
   'spawn.cc',
   'spawn.hh',
+  'unicode-width.hh',
   'utf8.cc',
   'utf8.hh',
   'vte.cc',
@@ -206,8 +234,22 @@ libvte_common_sources = config_sources + debug_sources + glib_glue_sources + gtk
   'widget.hh',
 )
 
+libvte_gtk3_drawing_sources = files(
+  'drawing-cairo.cc',
+  'drawing-cairo.hh',
+)
+
+libvte_gtk4_drawing_sources = files(
+  'drawing-gsk.cc',
+  'drawing-gsk.hh',
+)
+
 if get_option('icu')
   libvte_common_sources += icu_sources
+endif
+
+if get_option('sixel')
+  libvte_common_sources += sixel_sources
 endif
 
 if systemd_dep.found()
@@ -219,18 +261,6 @@ libvte_common_doc_sources = files(
   'vtegtk.cc',
   'vtepty.cc',
   'vteregex.cc',
-)
-
-# FIXMEchpe this should use files('...') (allowed as per docs, afaict), but that crashes meson
-generate_box_drawing = find_program('box_drawing_generate.sh')
-
-libvte_common_sources += custom_target(
-  'box-drawing',
-  input: 'box_drawing.txt',
-  output: 'box_drawing.h',
-  capture: true,
-  command: [generate_box_drawing, '@INPUT@'],
-  install: false,
 )
 
 libvte_common_sources += gnome.compile_resources(
@@ -248,6 +278,7 @@ libvte_common_sources += gnome.genmarshal(
 )
 
 libvte_common_public_deps = [
+  cairo_dep,
   gio_dep,
   glib_dep,
   gobject_dep,
@@ -255,14 +286,15 @@ libvte_common_public_deps = [
 ]
 
 libvte_common_deps = libvte_common_public_deps + [
+  cairo_gobject_dep,
   fribidi_dep,
   gnutls_dep,
   icu_dep,
   pcre2_dep,
   libm_dep,
+  liblz4_dep,
   pthreads_dep,
   systemd_dep,
-  zlib_dep,
 ]
 
 incs = [
@@ -273,14 +305,13 @@ incs = [
 libvte_common_cppflags = [
   '-DG_LOG_DOMAIN="VTE"',
   '-DLOCALEDIR="@0@"'.format(vte_prefix / vte_localedir),
-  '-DVTE_DISABLE_DEPRECATION_WARNINGS',
   '-DVTE_COMPILATION',
   '-UPARSER_INCLUDE_NOP',
 ]
 
 if get_option('gtk3')
-  libvte_gtk3_sources = libvte_common_sources + libvte_gtk3_public_headers + libvte_gtk3_enum_sources
-  libvte_gtk3_cppflags = libvte_common_cppflags + gtk3_version_cppflags + ['-DVTE_GTK=3',]
+  libvte_gtk3_sources = libvte_common_sources + libvte_gtk3_public_headers + libvte_gtk3_enum_sources + libvte_gtk3_drawing_sources
+  libvte_gtk3_cppflags = libvte_common_cppflags + gtk3_version_cppflags + ['-DVTE_GTK=3',] + release_args
   libvte_gtk3_deps = libvte_common_deps + [gtk3_dep,]
   libvte_gtk3_public_deps = libvte_common_public_deps + [gtk3_dep,]
 
@@ -318,8 +349,19 @@ if get_option('gtk3')
 endif
 
 if get_option('gtk4')
-  libvte_gtk4_sources = libvte_common_sources + libvte_gtk4_public_headers + libvte_gtk4_enum_sources + graphene_glue_sources
-  libvte_gtk4_cppflags = libvte_common_cppflags + gtk4_version_cppflags + ['-DVTE_GTK=4',]
+
+  libvte_gtk4_resources_data = files(
+  )
+
+  libvte_gtk4_resources_sources = gnome.compile_resources(
+    'vteresources-gtk4.cc',
+    'vte-gtk4.gresource.xml',
+    c_name: 'vte',
+    dependencies: libvte_gtk4_resources_data,
+  )
+
+  libvte_gtk4_sources = libvte_common_sources + libvte_gtk4_public_headers + libvte_gtk4_enum_sources + libvte_gtk4_resources_sources + graphene_glue_sources + libvte_gtk4_drawing_sources
+  libvte_gtk4_cppflags = libvte_common_cppflags + gtk4_version_cppflags + ['-DVTE_GTK=4',] + release_args
   libvte_gtk4_deps = libvte_common_deps + [gtk4_dep,]
   libvte_gtk4_public_deps = libvte_common_public_deps + [gtk4_dep,]
 
@@ -379,6 +421,10 @@ parser_cat_sources = config_sources + glib_glue_sources + libc_glue_sources + pa
   'parser-cat.cc',
   'vtedefines.hh',
 )
+
+if get_option('sixel')
+  parser_cat_sources += sixel_parser_sources
+endif
 
 parser_cat = executable(
   'parser-cat',
@@ -521,6 +567,18 @@ test_parser = executable(
   install: false,
 )
 
+test_pastify_sources = config_sources + pastify_sources + files(
+  'pastify-test.cc',
+)
+
+test_pastify = executable(
+  'test-pastify',
+  sources: test_pastify_sources,
+  dependencies: [glib_dep],
+  include_directories: top_inc,
+  install: false,
+)
+
 test_reaper_sources = config_sources + debug_sources + files(
   'reaper.cc',
   'reaper.hh'
@@ -548,6 +606,34 @@ test_refptr = executable(
   install: false,
 )
 
+if get_option('sixel')
+  fuzz_sixel_sources = config_sources + files(
+    'sixel-fuzzer.cc',
+  )
+
+  fuzz_sixel = executable(
+    'fuzz-sixel',
+    sources: fuzz_sixel_sources,
+    dependencies: [glib_dep,],
+    include_directories: top_inc,
+    install: false,
+  )
+
+  test_sixel_sources = config_sources + debug_sources + glib_glue_sources + sixel_parser_sources + sixel_context_sources + files(
+    'cairo-glue.hh',
+    'sixel-test.cc',
+    'vtedefines.hh',
+  )
+
+  test_sixel = executable(
+    'test-sixel',
+    sources: test_sixel_sources,
+    dependencies: [glib_dep,],
+    include_directories: top_inc,
+    install: false,
+  )
+endif
+
 test_stream_sources = config_sources + files(
   'vtestream-base.h',
   'vtestream-file.h',
@@ -560,7 +646,7 @@ test_stream_sources = config_sources + files(
 test_stream = executable(
   'test-stream',
   sources: test_stream_sources,
-  dependencies: [gio_dep, gnutls_dep, zlib_dep],
+  dependencies: [gio_dep, gnutls_dep, liblz4_dep],
   cpp_args: ['-DVTESTREAM_MAIN'],
   include_directories: top_inc,
   install: false,
@@ -574,6 +660,18 @@ test_tabstops_sources = config_sources + files(
 test_tabstops = executable(
   'test-tabstops',
   sources: test_tabstops_sources,
+  dependencies: [glib_dep],
+  include_directories: top_inc,
+  install: false,
+)
+
+test_unicode_width_sources = config_sources + unicode_width_sources + files(
+  'unicode-width-test.cc',
+)
+
+test_unicode_width = executable(
+  'test-unicode-width',
+  sources: test_unicode_width_sources,
   dependencies: [glib_dep],
   include_directories: top_inc,
   install: false,
@@ -615,16 +713,24 @@ test_env = [
 test_units = [
   ['modes', test_modes],
   ['parser', test_parser],
+  ['pastify', test_pastify],
   ['reaper', test_reaper],
   ['refptr', test_refptr],
   ['stream', test_stream],
   ['tabstops', test_tabstops],
+  ['unicode-width', test_unicode_width],
   ['utf8', test_utf8],
 ]
 
 if get_option('gtk3')
   test_units += [
     ['vtetypes', test_vtetypes],
+  ]
+endif
+
+if get_option('sixel')
+  test_units += [
+    ['sixel', test_sixel],
   ]
 endif
 

@@ -25,7 +25,7 @@
 #include "vtepty.h"
 #include "vtemacros.h"
 
-#ifndef VTE_DISABLE_DEPRECATION_WARNINGS
+#if !defined(VTE_DISABLE_DEPRECATION_WARNINGS) && !defined(VTE_COMPILATION)
 #define _VTE_DEPRECATED G_DEPRECATED
 #else
 #define _VTE_DEPRECATED
@@ -138,6 +138,27 @@ _VTE_DEPRECATED
 _VTE_PUBLIC
 const char *vte_terminal_get_encoding(VteTerminal *terminal) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1);
 
+typedef gboolean (*VteSelectionFunc)(VteTerminal *terminal,
+                                     glong column,
+                                     glong row,
+                                     gpointer data) _VTE_GNUC_NONNULL(1) _VTE_DEPRECATED;
+
+_VTE_DEPRECATED
+_VTE_PUBLIC
+char *vte_terminal_get_text(VteTerminal *terminal,
+			    VteSelectionFunc is_selected,
+			    gpointer user_data,
+			    GArray *attributes) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+
+_VTE_DEPRECATED
+_VTE_PUBLIC
+char *vte_terminal_get_text_range(VteTerminal *terminal,
+				  glong start_row, glong start_col,
+				  glong end_row, glong end_col,
+				  VteSelectionFunc is_selected,
+				  gpointer user_data,
+				  GArray *attributes) _VTE_CXX_NOEXCEPT _VTE_GNUC_NONNULL(1) G_GNUC_MALLOC;
+
 _VTE_DEPRECATED
 _VTE_PUBLIC
 char *vte_terminal_get_text_include_trailing_spaces(VteTerminal *terminal,
@@ -174,6 +195,16 @@ char **vte_get_encodings(gboolean include_aliases) _VTE_CXX_NOEXCEPT;
 _VTE_DEPRECATED
 _VTE_PUBLIC
 gboolean vte_get_encoding_supported(const char *encoding) _VTE_CXX_NOEXCEPT;
+
+typedef struct _VteCharAttributes VteCharAttributes _VTE_DEPRECATED;
+
+/* The structure we return as the supplemental attributes for strings. */
+struct _VteCharAttributes {
+        /*< private >*/
+        long row, column;  /* logical column */
+	PangoColor fore, back;
+	guint underline:1, strikethrough:1, columns:4;
+} _VTE_DEPRECATED;
 
 G_END_DECLS
 

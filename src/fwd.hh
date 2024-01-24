@@ -36,10 +36,19 @@ class Widget;
 
 } // namespace platform
 
+namespace sixel {
+
+class Context;
+class Parser;
+class Sequence;
+
+} // namespace sixel
+
 namespace view {
 
 class FontInfo;
 class DrawingContext;
+struct Rectangle;
 
 } // namespace view
 

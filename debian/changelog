@@ -1,3 +1,206 @@
+vte2.91 (0.75.0-1) experimental; urgency=medium
+
+  [ Jeremy Bícha ]
+  * New upstream release
+  * debian/control: Add liblz4-dev to Build-Depends
+  * debian/control: Bump minimum GTK4 to 4.12
+  * debian/*.symbols: Add new symbols
+
+  [ Samuel Thibault ]
+  * Rebase a11y patch
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 08 Jan 2024 13:57:13 -0500
+
+vte2.91 (0.74.2-1) unstable; urgency=medium
+
+  * New upstream release
+  * Stop using debian/control.in and dh_gnome_clean
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 02 Jan 2024 16:49:50 -0500
+
+vte2.91 (0.74.1-1) unstable; urgency=medium
+
+  * New upstream release
+  * Add Samuel Thibault's a11y patch to add missing text changes
+    on scrolling with modifications
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 23 Oct 2023 08:21:36 -0400
+
+vte2.91 (0.74.0-2) unstable; urgency=medium
+
+  * Revert "Add Samuel Thibault's a11y patch to add missing text changes"
+    (Closes: #1052198, #1052172)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 19 Sep 2023 07:59:03 -0400
+
+vte2.91 (0.74.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Add Samuel Thibault's a11y patch to add missing text changes
+    on scrolling with modifications
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 18 Sep 2023 06:55:40 -0400
+
+vte2.91 (0.73.99-1) unstable; urgency=high
+
+  * New upstream release
+    - Fix Shift+click regression (Closes: #1050729)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Sat, 02 Sep 2023 19:15:19 -0400
+
+vte2.91 (0.73.93-1) unstable; urgency=medium
+
+  * New upstream release
+  * debian/rules: update exclusion rule for udeb
+  * debian/libvte-2.91-0.symbols: Add new symbols
+  * Drop patch applied in new release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 07 Aug 2023 18:00:32 -0400
+
+vte2.91 (0.72.2-3) unstable; urgency=medium
+
+  * Release to unstable
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Fri, 21 Jul 2023 13:24:24 -0400
+
+vte2.91 (0.72.2-2) experimental; urgency=medium
+
+  [ Simon McVittie ]
+  * d/p/widget-Invalidate-ringview-when-the-invalidating.patch:
+    Add patch from upstream git to invalidate ring view more often when
+    necessary, fixing various assertion failures during event handling
+    (Closes: #1040049)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Fri, 14 Jul 2023 08:13:21 -0400
+
+vte2.91 (0.72.2-1) experimental; urgency=medium
+
+  * New upstream release
+    - Includes fix for an infinite loop processing OSC 104.
+      A malicious program accessed via ssh, telnet or similar protocols could
+      use this as a denial of service.
+      (Closes: #1037919, LP: #2022019; vte#2631 upstream)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Wed, 14 Jun 2023 16:54:36 -0400
+
+vte2.91 (0.72.1-1) experimental; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Fri, 21 Apr 2023 11:30:57 +0200
+
+vte2.91 (0.72.0-1) experimental; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 27 Mar 2023 07:43:55 -0400
+
+vte2.91 (0.71.99-1) experimental; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 08 Mar 2023 18:24:33 -0500
+
+vte2.91 (0.71.92-1) experimental; urgency=medium
+
+  * New upstream release
+  * debian/libvte-2.91-0.symbols: Add new symbols
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 15 Feb 2023 10:10:44 -0500
+
+vte2.91 (0.70.3-1) unstable; urgency=medium
+
+  * New upstream release
+  * Drop "last line" patch: applied in new release
+  * Update standards version to 4.6.2, no changes needed
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 15 Feb 2023 09:51:14 -0500
+
+vte2.91 (0.70.2-2) unstable; urgency=high
+
+  * Cherry-pick fix for GNOME Console 43 copying last line (Closes: #1017015)
+    (LP: #2002926)
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Sun, 15 Jan 2023 19:27:32 -0500
+
+vte2.91 (0.70.2-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 06 Dec 2022 09:00:58 -0500
+
+vte2.91 (0.70.1-1) unstable; urgency=medium
+
+  * New upstream release
+  * Drop gtk4 clipboard patches: applied in new release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Fri, 04 Nov 2022 09:25:47 +0100
+
+vte2.91 (0.70.0-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Sun, 18 Sep 2022 07:20:25 -0400
+
+vte2.91 (0.69.99-1) unstable; urgency=medium
+
+  * New upstream release
+  * Drop "open link" patch: applied in new release
+  * Cherry-pick 2 patches to fix middle click paste for GNOME Console
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Sun, 04 Sep 2022 07:24:40 -0400
+
+vte2.91 (0.69.92-2) unstable; urgency=high
+
+  * Cherry-pick patch to fix opening links in GNOME Console
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Fri, 02 Sep 2022 15:54:14 -0400
+
+vte2.91 (0.69.92-1) unstable; urgency=medium
+
+  * New upstream release (Closes: #1016640)
+  * Drop cherry-picked patches
+  * Refresh remaining patch
+  * debian/*symbols: Drop symbols from the previous alpha release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 08 Aug 2022 09:33:05 -0400
+
+vte2.91 (0.69.90-2) unstable; urgency=medium
+
+  * Rebuild after NEW acceptance
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 03 Aug 2022 14:01:58 -0400
+
+vte2.91 (0.69.90-1) unstable; urgency=medium
+
+  * New upstream release
+  * Build gtk4 library (Closes: #1013950)
+  * Update symbols files
+  * debian/control.in: Build-Depend on gi-docgen instead of gtk-doc-tools
+  * Refresh patch
+  * Add patch to fix toml install location
+  * Cherry-pick gtk4 related fixes since last release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Fri, 29 Jul 2022 17:18:37 -0400
+
+vte2.91 (0.68.0-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 28 Mar 2022 08:37:19 -0400
+
+vte2.91 (0.67.90-2) unstable; urgency=medium
+
+  [ Arnaud Ferraris ]
+  * New upstream release
+  * d/libvte-2.91-0.symbols: Add new symbols
+
+  [ Jeremy Bicha ]
+  * debian/copyright: Drop LGPL-2+/GPL-2+. The upstream maintainer
+    has used the option to explicitly relicense to LGPL-3+/GPL-3+.
+
+ -- Jeremy Bicha <jeremy.bicha@canonical.com>  Mon, 21 Feb 2022 15:07:23 -0500
+
 vte2.91 (0.66.2-1) unstable; urgency=medium
 
   * New upstream release

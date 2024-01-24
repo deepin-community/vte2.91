@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004,2009,2010 Red Hat, Inc.
- * Copyright © 2008, 2009, 2010, 2015 Christian Persch
+ * Copyright © 2008, 2009, 2010, 2015, 2022, 2023 Christian Persch
  *
  * This library is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published
@@ -37,7 +37,7 @@
 
 #include <pwd.h>
 
-#ifdef HAVE_LOCALE_H
+#if __has_include(<locale.h>)
 #include <locale.h>
 #endif
 
@@ -62,15 +62,15 @@
 #include "vteptyinternal.hh"
 #include "vteregexinternal.hh"
 
-#ifdef WITH_A11Y
+#include <cairo-gobject.h>
+
+#if WITH_A11Y
 #if VTE_GTK == 3
 #include "vteaccess.h"
-#else
-#undef WITH_A11Y
 #endif /* VTE_GTK == 3 */
 #endif /* WITH_A11Y */
 
-#ifdef WITH_ICU
+#if WITH_ICU
 #include "icu-glue.hh"
 #endif
 
@@ -79,12 +79,33 @@
 
 #define VTE_TERMINAL_CSS_NAME "vte-terminal"
 
+/* Note that the exact priority used is an implementation detail subject to change
+ * and *not* an API guarantee.
+ * */
+#if VTE_GTK == 3
+#define VTE_TERMINAL_CSS_PRIORITY (GTK_STYLE_PROVIDER_PRIORITY_APPLICATION)
+#elif VTE_GTK == 4
+#define VTE_TERMINAL_CSS_PRIORITY (GTK_STYLE_PROVIDER_PRIORITY_APPLICATION - 2)
+#endif
+
 template<typename T>
 constexpr bool check_enum_value(T value) noexcept;
 
 struct _VteTerminalClassPrivate {
         GtkStyleProvider *style_provider;
 };
+
+template<>
+constexpr bool check_enum_value<VteFormat>(VteFormat value) noexcept
+{
+        switch (value) {
+        case VTE_FORMAT_TEXT:
+        case VTE_FORMAT_HTML:
+                return true;
+        default:
+                return false;
+        }
+}
 
 #if VTE_GTK == 4
 
@@ -134,7 +155,7 @@ private:
         std::shared_ptr<vte::platform::Widget> m_widget;
 };
 
-#ifdef VTE_DEBUG
+#if VTE_DEBUG
 G_DEFINE_TYPE_WITH_CODE(VteTerminal, vte_terminal, GTK_TYPE_WIDGET,
                         {
                                 VteTerminal_private_offset =
@@ -170,6 +191,16 @@ get_widget(VteTerminal* terminal) /* throws */
 }
 
 #define WIDGET(t) (get_widget(t))
+
+namespace vte::platform {
+
+Widget*
+Widget::from_terminal(VteTerminal* t)
+{
+        return WIDGET(t);
+}
+
+} // namespace vte::platform
 
 vte::terminal::Terminal*
 _vte_terminal_get_impl(VteTerminal* terminal) /* throws */
@@ -667,6 +698,26 @@ catch (...)
         vte::log_exception();
 }
 
+static gboolean
+vte_terminal_popup_menu(GtkWidget* widget) noexcept
+try
+{
+        auto terminal = VTE_TERMINAL(widget);
+        if (WIDGET(terminal)->show_context_menu(vte::platform::EventContext{}))
+                return true;
+
+        auto const parent_class = GTK_WIDGET_CLASS(vte_terminal_parent_class);
+        if (parent_class->popup_menu)
+                return parent_class->popup_menu(widget);
+
+        return false;
+}
+catch (...)
+{
+        vte::log_exception();
+        return false;
+}
+
 #endif /* VTE_GTK == 3 */
 
 #if VTE_GTK == 4
@@ -844,7 +895,7 @@ try
         context = gtk_widget_get_style_context(&terminal->widget);
         gtk_style_context_add_provider (context,
                                         VTE_TERMINAL_GET_CLASS (terminal)->priv->style_provider,
-                                        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+                                        VTE_TERMINAL_CSS_PRIORITY);
 
 #if VTE_GTK == 3
         gtk_widget_set_has_window(&terminal->widget, FALSE);
@@ -939,6 +990,12 @@ try
                 case PROP_CJK_AMBIGUOUS_WIDTH:
                         g_value_set_int (value, vte_terminal_get_cjk_ambiguous_width (terminal));
                         break;
+                case PROP_CONTEXT_MENU_MODEL:
+                        g_value_set_object(value, vte_terminal_get_context_menu_model(terminal));
+                        break;
+                case PROP_CONTEXT_MENU:
+                        g_value_set_object(value, vte_terminal_get_context_menu(terminal));
+                        break;
                 case PROP_CURSOR_BLINK_MODE:
                         g_value_set_enum (value, vte_terminal_get_cursor_blink_mode (terminal));
                         break;
@@ -972,6 +1029,9 @@ try
                 case PROP_FONT_DESC:
                         g_value_set_boxed (value, vte_terminal_get_font (terminal));
                         break;
+                case PROP_FONT_OPTIONS:
+                        g_value_set_boxed(value, vte_terminal_get_font_options(terminal));
+                        break;
                 case PROP_FONT_SCALE:
                         g_value_set_double (value, vte_terminal_get_font_scale (terminal));
                         break;
@@ -996,6 +1056,9 @@ try
                 case PROP_SCROLLBACK_LINES:
                         g_value_set_uint (value, vte_terminal_get_scrollback_lines(terminal));
                         break;
+                case PROP_SCROLL_ON_INSERT:
+                        g_value_set_boolean(value, vte_terminal_get_scroll_on_insert(terminal));
+                        break;
                 case PROP_SCROLL_ON_KEYSTROKE:
                         g_value_set_boolean (value, vte_terminal_get_scroll_on_keystroke(terminal));
                         break;
@@ -1013,6 +1076,22 @@ try
                         break;
                 case PROP_WORD_CHAR_EXCEPTIONS:
                         g_value_set_string (value, vte_terminal_get_word_char_exceptions (terminal));
+                        break;
+
+                case PROP_XALIGN:
+                        g_value_set_enum(value, vte_terminal_get_xalign(terminal));
+                        break;
+
+                case PROP_YALIGN:
+                        g_value_set_enum(value, vte_terminal_get_yalign(terminal));
+                        break;
+
+                case PROP_XFILL:
+                        g_value_set_boolean(value, vte_terminal_get_xfill(terminal));
+                        break;
+
+                case PROP_YFILL:
+                        g_value_set_boolean(value, vte_terminal_get_yfill(terminal));
                         break;
 
                 default:
@@ -1072,6 +1151,12 @@ try
                 case PROP_CJK_AMBIGUOUS_WIDTH:
                         vte_terminal_set_cjk_ambiguous_width (terminal, g_value_get_int (value));
                         break;
+                case PROP_CONTEXT_MENU_MODEL:
+                        vte_terminal_set_context_menu_model(terminal, reinterpret_cast<GMenuModel*>(g_value_get_object(value)));
+                        break;
+                case PROP_CONTEXT_MENU:
+                        vte_terminal_set_context_menu(terminal, reinterpret_cast<GtkWidget*>(g_value_get_object(value)));
+                        break;
                 case PROP_CURSOR_BLINK_MODE:
                         vte_terminal_set_cursor_blink_mode (terminal, (VteCursorBlinkMode)g_value_get_enum (value));
                         break;
@@ -1099,6 +1184,10 @@ try
                 case PROP_FONT_DESC:
                         vte_terminal_set_font (terminal, (PangoFontDescription *)g_value_get_boxed (value));
                         break;
+                case PROP_FONT_OPTIONS:
+                        vte_terminal_set_font_options(terminal,
+                                                      reinterpret_cast<cairo_font_options_t const*>(g_value_get_boxed(value)));
+                        break;
                 case PROP_FONT_SCALE:
                         vte_terminal_set_font_scale (terminal, g_value_get_double (value));
                         break;
@@ -1117,6 +1206,9 @@ try
                 case PROP_SCROLLBACK_LINES:
                         vte_terminal_set_scrollback_lines (terminal, g_value_get_uint (value));
                         break;
+                case PROP_SCROLL_ON_INSERT:
+                        vte_terminal_set_scroll_on_insert(terminal, g_value_get_boolean(value));
+                        break;
                 case PROP_SCROLL_ON_KEYSTROKE:
                         vte_terminal_set_scroll_on_keystroke(terminal, g_value_get_boolean (value));
                         break;
@@ -1131,6 +1223,22 @@ try
                         break;
                 case PROP_WORD_CHAR_EXCEPTIONS:
                         vte_terminal_set_word_char_exceptions (terminal, g_value_get_string (value));
+                        break;
+
+                case PROP_XALIGN:
+                        vte_terminal_set_xalign(terminal, VteAlign(g_value_get_enum(value)));
+                        break;
+
+                case PROP_YALIGN:
+                        vte_terminal_set_yalign(terminal, VteAlign(g_value_get_enum(value)));
+                        break;
+
+                case PROP_XFILL:
+                        vte_terminal_set_xfill(terminal, g_value_get_boolean(value));
+                        break;
+
+                case PROP_YFILL:
+                        vte_terminal_set_yfill(terminal, g_value_get_boolean(value));
                         break;
 
                         /* Not writable */
@@ -1155,7 +1263,7 @@ catch (...)
 static void
 vte_terminal_class_init(VteTerminalClass *klass)
 {
-#ifdef VTE_DEBUG
+#if VTE_DEBUG
 	{
                 _vte_debug_init();
 		_vte_debug_print(VTE_DEBUG_LIFECYCLE,
@@ -1222,6 +1330,7 @@ vte_terminal_class_init(VteTerminalClass *klass)
 	widget_class->get_preferred_width = vte_terminal_get_preferred_width;
 	widget_class->get_preferred_height = vte_terminal_get_preferred_height;
         widget_class->screen_changed = vte_terminal_screen_changed;
+        widget_class->popup_menu = vte_terminal_popup_menu;
 #endif
 
 #if VTE_GTK == 4
@@ -1913,6 +2022,38 @@ vte_terminal_class_init(VteTerminalClass *klass)
                                    g_cclosure_marshal_VOID__VOIDv);
 
         /**
+         * VteTerminal::setup-context-menu:
+         * @terminal: the object which received the signal
+         * @context: (nullable): the context
+         *
+         * Emitted with non-%NULL context before @terminal shows a context menu.
+         * The handler may set either a menu model using
+         * vte_terminal_set_context_menu_model(), or a menu using
+         * vte_terminal_set_context_menu(), which will then be used as context
+         * menu.
+         * If neither a menu model nor a menu are set, a context menu
+         * will not be shown.
+         *
+         * Note that @context is only valid during the signal emission; you may
+         * not retain it to call methods on it afterwards.
+         *
+         * Also emitted with %NULL context after the context menu has been dismissed.
+         */
+        signals[SIGNAL_SETUP_CONTEXT_MENU] =
+                g_signal_new(I_("setup-context-menu"),
+                             G_OBJECT_CLASS_TYPE(klass),
+                             G_SIGNAL_RUN_LAST,
+                             G_STRUCT_OFFSET(VteTerminalClass, setup_context_menu),
+                             nullptr, nullptr,
+                             g_cclosure_marshal_VOID__POINTER,
+                             G_TYPE_NONE,
+                             1,
+                             VTE_TYPE_EVENT_CONTEXT);
+        g_signal_set_va_marshaller(signals[SIGNAL_SETUP_CONTEXT_MENU],
+                                   G_OBJECT_CLASS_TYPE(klass),
+                                   g_cclosure_marshal_VOID__POINTERv);
+
+        /**
          * VteTerminal:allow-bold:
          *
          * Controls whether or not the terminal will attempt to draw bold text,
@@ -2019,6 +2160,38 @@ vte_terminal_class_init(VteTerminalClass *klass)
                                   (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
 
         /**
+         * VteTerminal:context-menu-model: (attributes org.gtk.Property.get=vte_terminal_get_context_menu_model org.gtk.Property.set=vte_terminal_set_context_menu_model)
+         *
+         * The menu model used for context menus. If non-%NULL, the context menu is
+         * generated from this model, and overrides a context menu set with the
+         * #VteTerminal::context-menu property or vte_terminal_set_context_menu().
+         *
+         * Since: 0.76
+         */
+        pspecs[PROP_CONTEXT_MENU_MODEL] =
+                g_param_spec_object("context-menu-model", nullptr, nullptr,
+                                    G_TYPE_MENU_MODEL,
+                                    GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+
+        /**
+         * VteTerminal:context-menu: (attributes org.gtk.Property.get=vte_terminal_get_context_menu org.gtk.Property.set=vte_terminal_set_context_menu)
+         *
+         * The menu used for context menus. Note that context menu model set with the
+         * #VteTerminal::context-menu-model property or vte_terminal_set_context_menu_model()
+         * takes precedence over this.
+         *
+         * Since: 0.76
+         */
+        pspecs[PROP_CONTEXT_MENU] =
+                g_param_spec_object("context-menu", nullptr, nullptr,
+#if VTE_GTK == 3
+                                    GTK_TYPE_MENU,
+#elif VTE_GTK == 4
+                                    GTK_TYPE_POPOVER,
+#endif // VTE_GTK
+                                    GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+
+        /**
          * VteTerminal:cursor-blink-mode:
          *
          * Sets whether or not the cursor will blink. Using %VTE_CURSOR_BLINK_SYSTEM
@@ -2086,9 +2259,32 @@ vte_terminal_class_init(VteTerminalClass *klass)
          */
         pspecs[PROP_ENABLE_SIXEL] =
                 g_param_spec_boolean ("enable-sixel", nullptr, nullptr,
+#if WITH_SIXEL
+                                      VTE_SIXEL_ENABLED_DEFAULT,
+#else
                                       false,
+#endif
                                       (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
 
+
+        /**
+         * VteTerminal:font-options:
+         *
+         * The terminal's font options, or %NULL to use the default font options.
+         *
+         * Note that on GTK4, the terminal by default uses font options
+         * with %CAIRO_HINT_METRICS_ON set; to override that, use this
+         * function to set a #cairo_font_options_t that has
+         * %CAIRO_HINT_METRICS_OFF set.
+         *
+         * Since: 0.74
+         */
+        pspecs[PROP_FONT_OPTIONS] =
+                g_param_spec_boxed("font-options", nullptr, nullptr,
+                                   CAIRO_GOBJECT_TYPE_FONT_OPTIONS,
+                                   GParamFlags(G_PARAM_READWRITE |
+                                               G_PARAM_STATIC_STRINGS |
+                                               G_PARAM_EXPLICIT_NOTIFY));
 
         /**
          * VteTerminal:font-scale:
@@ -2204,6 +2400,22 @@ vte_terminal_class_init(VteTerminalClass *klass)
                                    0, G_MAXUINT,
                                    VTE_SCROLLBACK_INIT,
                                    (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+
+
+        /**
+         * VteTerminal:scroll-on-insert:
+         *
+         * Controls whether or not the terminal will forcibly scroll to the bottom of
+         * the viewable history when the text is inserted (e.g. by a paste).
+         *
+         * Since: 0.76
+         */
+        pspecs[PROP_SCROLL_ON_INSERT] =
+                g_param_spec_boolean("scroll-on-insert", nullptr, nullptr,
+                                     true,
+                                     GParamFlags(G_PARAM_READWRITE |
+                                                 G_PARAM_STATIC_STRINGS |
+                                                 G_PARAM_EXPLICIT_NOTIFY));
 
         /**
          * VteTerminal:scroll-on-keystroke:
@@ -2327,6 +2539,59 @@ vte_terminal_class_init(VteTerminalClass *klass)
                                      NULL,
                                      (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
 
+        /**
+         * VteTerminal:xalign:
+         *
+         * The horizontal alignment of @terminal within its allocation.
+         *
+         * Since: 0.76
+         */
+        pspecs[PROP_XALIGN] =
+                g_param_spec_enum("xalign", nullptr, nullptr,
+                                  VTE_TYPE_ALIGN,
+                                  VTE_ALIGN_START,
+                                  GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+
+        /**
+         * VteTerminal:yalign:
+         *
+         * The vertical alignment of @terminal within its allocation
+         *
+         * Since: 0.76
+         */
+        pspecs[PROP_YALIGN] =
+                g_param_spec_enum("yalign", nullptr, nullptr,
+                                  VTE_TYPE_ALIGN,
+                                  VTE_ALIGN_START,
+                                  GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+
+        /**
+         * VteTerminal:xfill:
+         *
+         * The horizontal fillment of @terminal within its allocation.
+         *
+         * Since: 0.76
+         */
+        pspecs[PROP_XFILL] =
+                g_param_spec_boolean("xfill", nullptr, nullptr,
+                                     TRUE,
+                                     GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+
+        /**
+         * VteTerminal:yfill:
+         *
+         * The vertical fillment of @terminal within its allocation.
+         * Note that #VteTerminal:yfill=%TRUE is only supported with
+         * #VteTerminal:yalign=%VTE_ALIGN_START, and is ignored for
+         * all other yalign values.
+         *
+         * Since: 0.76
+         */
+        pspecs[PROP_YFILL] =
+                g_param_spec_boolean("yfill", nullptr, nullptr,
+                                     TRUE,
+                                     GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+
         g_object_class_install_properties(gobject_class, LAST_PROP, pspecs);
 
 #if VTE_GTK == 3
@@ -2353,10 +2618,8 @@ vte_terminal_class_init(VteTerminalClass *klass)
 #endif
         gtk_css_provider_load_from_data (GTK_CSS_PROVIDER (klass->priv->style_provider),
                                          "VteTerminal, " VTE_TERMINAL_CSS_NAME " {\n"
-#if VTE_GTK == 3
                                          "padding: 1px 1px 1px 1px;\n"
-#endif
-#if GTK_CHECK_VERSION (3, 24, 22)
+#if (VTE_GTK == 4) || ((VTE_GTK == 3) && GTK_CHECK_VERSION (3, 24, 22))
                                          "background-color: @text_view_bg;\n"
 #else
                                          "background-color: @theme_base_color;\n"
@@ -2373,7 +2636,7 @@ vte_terminal_class_init(VteTerminalClass *klass)
 #endif
 
 #if VTE_GTK == 3
-#ifdef WITH_A11Y
+#if WITH_A11Y
         /* a11y */
         gtk_widget_class_set_accessible_type(widget_class, VTE_TYPE_TERMINAL_ACCESSIBLE);
 #endif
@@ -2395,26 +2658,32 @@ const char *
 vte_get_features (void) noexcept
 {
         return
-#ifdef WITH_FRIBIDI
+#if WITH_FRIBIDI
                 "+BIDI"
 #else
                 "-BIDI"
 #endif
                 " "
-#ifdef WITH_GNUTLS
+#if WITH_GNUTLS
                 "+GNUTLS"
 #else
                 "-GNUTLS"
 #endif
                 " "
-#ifdef WITH_ICU
+#if WITH_ICU
                 "+ICU"
 #else
                 "-ICU"
 #endif
+                " "
+#if WITH_SIXEL
+                "+SIXEL"
+#else
+                "-SIXEL"
+#endif
 #ifdef __linux__
                 " "
-#ifdef WITH_SYSTEMD
+#if WITH_SYSTEMD
                 "+SYSTEMD"
 #else
                 "-SYSTEMD"
@@ -2436,14 +2705,17 @@ VteFeatureFlags
 vte_get_feature_flags(void) noexcept
 {
         return VteFeatureFlags(0ULL |
-#ifdef WITH_FRIBIDI
+#if WITH_FRIBIDI
                                VTE_FEATURE_FLAG_BIDI |
 #endif
-#ifdef WITH_ICU
+#if WITH_ICU
                                VTE_FEATURE_FLAG_ICU |
 #endif
+#if WITH_SIXEL
+                               VTE_FEATURE_FLAG_SIXEL |
+#endif
 #ifdef __linux__
-#ifdef WITH_SYSTEMD
+#if WITH_SYSTEMD
                                VTE_FEATURE_FLAG_SYSTEMD |
 #endif
 #endif // __linux__
@@ -2537,7 +2809,7 @@ vte_get_user_shell (void) noexcept
 void
 vte_set_test_flags(guint64 flags) noexcept
 {
-#ifdef VTE_DEBUG
+#if VTE_DEBUG
         g_test_flags = flags;
 #endif
 }
@@ -2562,7 +2834,7 @@ char **
 vte_get_encodings(gboolean include_aliases) noexcept
 try
 {
-#ifdef WITH_ICU
+#if WITH_ICU
         return vte::base::get_icu_charsets(include_aliases != FALSE);
 #else
         char *empty[] = { nullptr };
@@ -2599,7 +2871,7 @@ try
 {
         g_return_val_if_fail(encoding != nullptr, false);
 
-#ifdef WITH_ICU
+#if WITH_ICU
         return vte::base::get_icu_charset_supported(encoding);
 #else
         return false;
@@ -2672,7 +2944,7 @@ vte_terminal_copy_clipboard_format(VteTerminal *terminal,
 try
 {
         g_return_if_fail(VTE_IS_TERMINAL(terminal));
-        g_return_if_fail(format == VTE_FORMAT_TEXT || format == VTE_FORMAT_HTML);
+        g_return_if_fail(check_enum_value(format));
 
         WIDGET(terminal)->copy(vte::platform::ClipboardType::CLIPBOARD,
                                clipboard_format_from_vte(format));
@@ -2718,6 +2990,32 @@ try
 	g_return_if_fail(VTE_IS_TERMINAL(terminal));
 
         IMPL(terminal)->emit_paste_clipboard();
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
+ * vte_terminal_paste_text:
+ * @terminal: a #VteTerminal
+ * @text: a string to paste
+ *
+ * Sends @text to the terminal's child as if retrived from the clipboard,
+ * this differs from vte_terminal_feed_child() in that it may process
+ * @text before passing it to the child (e.g. apply bracketed mode)
+ *
+ * Since: 0.68
+ */
+void
+vte_terminal_paste_text(VteTerminal *terminal,
+                        char const* text) noexcept
+try
+{
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+        g_return_if_fail(text != nullptr);
+
+        WIDGET(terminal)->paste_text(text);
 }
 catch (...)
 {
@@ -3017,6 +3315,189 @@ catch (...)
         vte::log_exception();
         return false;
 }
+
+#elif VTE_GTK == 4
+
+/**
+ * vte_terminal_check_match_at:
+ * @terminal: a #VteTerminal
+ * @x:
+ * @y:
+ * @tag: (out) (allow-none): a location to store the tag, or %NULL
+ *
+ * Checks if the text in and around the position (x, y) matches any of the
+ * regular expressions previously set using vte_terminal_match_add().  If a
+ * match exists, the text string is returned and if @tag is not %NULL, the number
+ * associated with the matched regular expression will be stored in @tag.
+ *
+ * If more than one regular expression has been set with
+ * vte_terminal_match_add(), then expressions are checked in the order in
+ * which they were added.
+ *
+ * Returns: (transfer full) (nullable): a newly allocated string which matches one of the previously
+ *   set regular expressions, or %NULL if there is no match
+ *
+ * Since: 0.70
+ */
+char*
+vte_terminal_check_match_at(VteTerminal* terminal,
+                            double x,
+                            double y,
+                            int* tag) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), FALSE);
+        return WIDGET(terminal)->regex_match_check_at(x, y, tag);
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/**
+ * vte_terminal_check_hyperlink_at:
+ * @terminal: a #VteTerminal
+ * @x:
+ * @y:
+ *
+ * Returns a nonempty string: the target of the explicit hyperlink (printed using the OSC 8
+ * escape sequence) at the position (x, y), or %NULL.
+ *
+ * Proper use of the escape sequence should result in URI-encoded URIs with a proper scheme
+ * like "http://", "https://", "file://", "mailto:" etc. This is, however, not enforced by VTE.
+ * The caller must tolerate the returned string potentially not being a valid URI.
+ *
+ * Returns: (transfer full) (nullable): a newly allocated string containing the target of the hyperlink,
+ *  or %NULL
+ *
+ * Since: 0.70
+ */
+char*
+vte_terminal_check_hyperlink_at(VteTerminal* terminal,
+                                double x,
+                                double y) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+        return WIDGET(terminal)->hyperlink_check_at(x, y);
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/**
+ * vte_terminal_check_regex_array_at: (rename-to vte_terminal_check_regex_simple_at)
+ * @terminal: a #VteTerminal
+ * @x:
+ * @y:
+ * @regexes: (array length=n_regexes): an array of #VteRegex
+ * @n_regexes: number of items in @regexes
+ * @match_flags: PCRE2 match flags, or 0
+ * @n_matches: (out) (optional): number of items in @matches, which is always equal to @n_regexes
+ *
+ * Like vte_terminal_check_regex_simple_at(), but returns an array of strings,
+ * containing the matching text (or %NULL if no match) corresponding to each of the
+ * regexes in @regexes.
+ *
+ * You must free each string and the array; but note that this is *not* a %NULL-terminated
+ * string array, and so you must *not* use g_strfreev() on it.
+ *
+ * Returns: (nullable) (transfer full) (array length=n_matches): a newly allocated array of strings,
+ *   or %NULL if none of the regexes matched
+ *
+ * Since: 0.70
+ */
+char**
+vte_terminal_check_regex_array_at(VteTerminal* terminal,
+                                  double x,
+                                  double y,
+                                  VteRegex** regexes,
+                                  gsize n_regexes,
+                                  guint32 match_flags,
+                                  gsize* n_matches) noexcept
+try
+{
+        if (n_matches)
+                *n_matches = n_regexes;
+
+        if (n_regexes == 0)
+                return nullptr;
+
+        auto matches = vte::glib::take_free_ptr(g_new0(char*, n_regexes));
+        if (!vte_terminal_check_regex_simple_at(terminal,
+                                                x, y,
+                                                regexes,
+                                                n_regexes,
+                                                match_flags,
+                                                matches.get()))
+            return nullptr;
+
+        return matches.release();
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/**
+ * vte_terminal_check_regex_simple_at: (skip)
+ * @terminal: a #VteTerminal
+ * @x:
+ * @y:
+ * @regexes: (array length=n_regexes): an array of #VteRegex
+ * @n_regexes: number of items in @regexes
+ * @match_flags: PCRE2 match flags, or 0
+ * @matches: (out caller-allocates) (array length=n_regexes) (transfer full): a location to store the matches
+ *
+ * Checks each regex in @regexes if the text in and around the position (x, y)
+ * matches the regular expressions.  If a match exists, the matched
+ * text is stored in @matches at the position of the regex in @regexes; otherwise
+ * %NULL is stored there.  Each non-%NULL element of @matches should be freed with
+ * g_free().
+ *
+ * Note that the regexes in @regexes should have been created using the %PCRE2_MULTILINE flag.
+ *
+ * Returns: %TRUE iff any of the regexes produced a match
+ *
+ * Since: 0.70
+ */
+gboolean
+vte_terminal_check_regex_simple_at(VteTerminal* terminal,
+                                   double x,
+                                   double y,
+                                   VteRegex** regexes,
+                                   gsize n_regexes,
+                                   guint32 match_flags,
+                                   char** matches) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), FALSE);
+        g_return_val_if_fail(regexes != NULL || n_regexes == 0, FALSE);
+        for (gsize i = 0; i < n_regexes; i++) {
+                g_return_val_if_fail(_vte_regex_has_purpose(regexes[i], vte::base::Regex::Purpose::eMatch), -1);
+                g_warn_if_fail(_vte_regex_has_multiline_compile_flag(regexes[i]));
+        }
+        g_return_val_if_fail(matches != NULL, FALSE);
+
+        return WIDGET(terminal)->regex_match_check_extra_at(x, y,
+                                                            regex_array_from_wrappers(regexes),
+                                                            n_regexes,
+                                                            match_flags,
+                                                            matches);
+}
+catch (...)
+{
+        vte::log_exception();
+        return false;
+}
+
+#endif /* VTE_GTK */
+
+#if VTE_GTK == 3
 
 /**
  * vte_terminal_event_check_gregex_simple:
@@ -3675,7 +4156,7 @@ spawn_async_cb(GObject *source,
  * VteTerminalSpawnAsyncCallback:
  * @terminal: the #VteTerminal
  * @pid: a #GPid
- * @error: a #GError, or %NULL
+ * @error: (nullable): a #GError, or %NULL
  * @user_data: user data that was passed to vte_terminal_spawn_async
  *
  * Callback for vte_terminal_spawn_async().
@@ -3953,55 +4434,84 @@ catch (...)
  * a cell has to be selected or not.
  *
  * Returns: %TRUE if cell has to be selected; %FALSE if otherwise.
+ *
+ * Deprecated: 0.76
  */
 
 static void
-warn_if_callback(VteSelectionFunc func) noexcept
+warn_if_callback(VteSelectionFunc func,
+                 char const* caller = __builtin_FUNCTION()) noexcept
 {
         if (!func)
                 return;
 
-#ifndef VTE_DEBUG
+#if !VTE_DEBUG
         static gboolean warned = FALSE;
         if (warned)
                 return;
         warned = TRUE;
 #endif
-        g_warning ("VteSelectionFunc callback ignored.\n");
+        g_warning ("%s: VteSelectionFunc callback ignored.\n", caller);
 }
 
 /**
- * vte_terminal_get_text:
- * @terminal: a #VteTerminal
- * @is_selected: (scope call) (allow-none): a #VteSelectionFunc callback
- * @user_data: (closure): user data to be passed to the callback
- * @attributes: (nullable) (out caller-allocates) (transfer full) (array) (element-type Vte.CharAttributes): location for storing text attributes
+ * VteCharAttributes:
  *
- * Extracts a view of the visible part of the terminal.  If @is_selected is not
- * %NULL, characters will only be read if @is_selected returns %TRUE after being
- * passed the column and row, respectively.  A #VteCharAttributes structure
- * is added to @attributes for each byte added to the returned string detailing
- * the character's position, colors, and other characteristics.
+ * Deprecated: 0.68
+ */
+
+static void
+warn_if_attributes(void* array,
+                   char const* caller = __builtin_FUNCTION()) noexcept
+{
+        if (!array)
+                return;
+
+#if !VTE_DEBUG
+        static gboolean warned = FALSE;
+        if (warned)
+                return;
+        warned = TRUE;
+#endif
+        g_warning ("%s: Passing a GArray to retrieve attributes is deprecated. In a future version, passing non-NULL as attributes array will make the function return NULL.\n", caller);
+}
+
+/**
+ * vte_terminal_get_text_format:
+ * @terminal: a #VteTerminal
+ * @format: the #VteFormat to use
+ *
+ * Returns text from the visible part of the terminal in the specified format.
  *
  * This method is unaware of BiDi. The columns returned in @attributes are
  * logical columns.
  *
  * Returns: (transfer full) (nullable): a newly allocated text string, or %NULL.
+ *
+ * Since: 0.76
  */
-char *
-vte_terminal_get_text(VteTerminal *terminal,
-		      VteSelectionFunc is_selected,
-		      gpointer user_data,
-		      GArray *attributes) noexcept
+char*
+vte_terminal_get_text_format(VteTerminal* terminal,
+                             VteFormat format) noexcept
 try
 {
-	g_return_val_if_fail(VTE_IS_TERMINAL(terminal), NULL);
-        warn_if_callback(is_selected);
-        auto text = IMPL(terminal)->get_text_displayed(true /* wrap */,
-                                                       attributes);
-        if (text == nullptr)
-                return nullptr;
-        return (char*)g_string_free(text, FALSE);
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+        g_return_val_if_fail(check_enum_value(format), nullptr);
+
+        VteCharAttrList attributes;
+        vte_char_attr_list_init(&attributes);
+
+        auto const impl = IMPL(terminal);
+        auto text = vte::take_freeable(g_string_new(nullptr));
+
+        impl->get_text_displayed(text.get(), format == VTE_FORMAT_HTML ? &attributes : nullptr);
+
+        if (format == VTE_FORMAT_HTML)
+                text = vte::take_freeable(impl->attributes_to_html(text.get(), &attributes));
+
+        vte_char_attr_list_clear(&attributes);
+
+        return vte::glib::release_to_string(std::move(text));
 }
 catch (...)
 {
@@ -4010,24 +4520,55 @@ catch (...)
 }
 
 /**
- * vte_terminal_get_text_include_trailing_spaces:
+ * vte_terminal_get_text:
  * @terminal: a #VteTerminal
- * @is_selected: (scope call) (allow-none): a #VteSelectionFunc callback
- * @user_data: (closure): user data to be passed to the callback
- * @attributes: (out caller-allocates) (transfer full) (array) (element-type Vte.CharAttributes): location for storing text attributes
+ * @is_selected: (scope call) (nullable) (closure user_data): a #VteSelectionFunc callback. Deprecated: 0.44: Always pass %NULL here.
+ * @user_data: user data to be passed to the callback
+ * @attributes: (nullable) (optional) (out caller-allocates) (transfer full) (array) (element-type Vte.CharAttributes): location for storing text attributes. Deprecated: 0.68: Always pass %NULL here.
  *
- * Extracts a view of the visible part of the terminal.  If @is_selected is not
- * %NULL, characters will only be read if @is_selected returns %TRUE after being
- * passed the column and row, respectively.  A #VteCharAttributes structure
- * is added to @attributes for each byte added to the returned string detailing
- * the character's position, colors, and other characteristics.
+ * Extracts a view of the visible part of the terminal.
  *
  * This method is unaware of BiDi. The columns returned in @attributes are
  * logical columns.
  *
+ * Note: since 0.68, passing a non-%NULL @attributes parameter is deprecated. Starting with
+ * 0.72, passing a non-%NULL @attributes parameter will make this function itself return %NULL.
+ * Since 0.72, passing a non-%NULL @is_selected parameter will make this function itself return %NULL.
+ *
+ * Returns: (transfer full) (nullable): a newly allocated text string, or %NULL.
+
+ * Deprecated: 0.76: Use vte_terminal_get_text_format() instead
+ */
+char *
+vte_terminal_get_text(VteTerminal *terminal,
+		      VteSelectionFunc is_selected,
+		      gpointer user_data,
+		      GArray *attributes) noexcept
+{
+        g_return_val_if_fail(attributes == nullptr, nullptr);
+        warn_if_callback(is_selected);
+        return vte_terminal_get_text_format(terminal, VTE_FORMAT_TEXT);
+}
+
+/**
+ * vte_terminal_get_text_include_trailing_spaces:
+ * @terminal: a #VteTerminal
+ * @is_selected: (scope call) (nullable) (closure user_data): a #VteSelectionFunc callback. Deprecated: 0.44: Always pass %NULL here.
+ * @user_data: user data to be passed to the callback
+ * @attributes: (nullable) (optional) (out caller-allocates) (transfer full) (array) (element-type Vte.CharAttributes): location for storing text attributes. Deprecated: 0.68: Always pass %NULL here.
+ *
+ * Extracts a view of the visible part of the terminal.
+ *
+ * This method is unaware of BiDi. The columns returned in @attributes are
+ * logical columns.
+ *
+ * Note: since 0.68, passing a non-%NULL @array parameter is deprecated. Starting with
+ * 0.72, passing a non-%NULL @array parameter will make this function itself return %NULL.
+ * Since 0.72, passing a non-%NULL @is_selected parameter will make this function itself return %NULL.
+ *
  * Returns: (transfer full): a newly allocated text string, or %NULL.
  *
- * Deprecated: 0.56: Use vte_terminal_get_text() instead.
+ * Deprecated: 0.56: Use vte_terminal_get_text_format() instead.
  */
 char *
 vte_terminal_get_text_include_trailing_spaces(VteTerminal *terminal,
@@ -4045,23 +4586,27 @@ vte_terminal_get_text_include_trailing_spaces(VteTerminal *terminal,
  * @start_col: first column to search for data
  * @end_row: last row to search for data
  * @end_col: last column to search for data
- * @is_selected: (scope call) (allow-none): a #VteSelectionFunc callback
- * @user_data: (closure): user data to be passed to the callback
- * @attributes: (nullable) (out caller-allocates) (transfer full) (array) (element-type Vte.CharAttributes): location for storing text attributes
+ * @is_selected: (scope call) (nullable) (closure user_data): a #VteSelectionFunc callback. Deprecated: 0.44: Always pass %NULL here
+ * @user_data: user data to be passed to the callback
+ * @attributes: (nullable) (optional) (out caller-allocates) (transfer full) (array) (element-type Vte.CharAttributes): location for storing text attributes. Deprecated: 0.68: Always pass %NULL here.
  *
- * Extracts a view of the visible part of the terminal.  If @is_selected is not
- * %NULL, characters will only be read if @is_selected returns %TRUE after being
- * passed the column and row, respectively.  A #VteCharAttributes structure
- * is added to @attributes for each byte added to the returned string detailing
- * the character's position, colors, and other characteristics.  The
+ * Extracts a view of the visible part of the terminal. The
  * entire scrollback buffer is scanned, so it is possible to read the entire
  * contents of the buffer using this function.
  *
  * This method is unaware of BiDi. The columns passed in @start_col and @end_row,
  * and returned in @attributes are logical columns.
  *
+ * Since 0.68, passing a non-%NULL @array parameter is deprecated.
+ * Since 0.72, passing a non-%NULL @array parameter will make this function
+ *   itself return %NULL.
+ * Since 0.72, passing a non-%NULL @is_selected function will make this function
+ *   itself return %NULL.
+ *
  * Returns: (transfer full) (nullable): a newly allocated text string, or %NULL.
- */
+ *
+ * Deprecated: 0.76: Use vte_terminal_get_text_range_format() instead
+*/
 char *
 vte_terminal_get_text_range(VteTerminal *terminal,
 			    long start_row,
@@ -4073,21 +4618,117 @@ vte_terminal_get_text_range(VteTerminal *terminal,
 			    GArray *attributes) noexcept
 try
 {
-	g_return_val_if_fail(VTE_IS_TERMINAL(terminal), NULL);
         warn_if_callback(is_selected);
-        auto text = IMPL(terminal)->get_text(start_row, start_col,
-                                             end_row, end_col,
-                                             false /* block */,
-                                             true /* wrap */,
-                                             attributes);
-        if (text == nullptr)
+        warn_if_attributes(attributes);
+        if (is_selected || attributes)
                 return nullptr;
-        return (char*)g_string_free(text, FALSE);
+
+        return vte_terminal_get_text_range_format(terminal,
+                                                  VTE_FORMAT_TEXT,
+                                                  start_row,
+                                                  start_col,
+                                                  end_row,
+                                                  end_col,
+                                                  nullptr);
 }
 catch (...)
 {
         vte::log_exception();
         return nullptr;
+}
+
+/*
+ * _vte_terminal_get_text_range_format_full:
+ * @terminal: a #VteTerminal
+ * @format: the #VteFormat to use
+ * @start_row: the first row of the range
+ * @start_col: the first column of the range
+ * @end_row: the last row of the range
+ * @end_col: the last column of the range
+ * @block_mode:
+ * @length: (optional) (out): a pointer to a #gsize to store the string length
+ *
+ * Returns the specified range of text in the specified format.
+ *
+ * Returns: (transfer full) (nullable): a newly allocated string, or %NULL.
+ */
+static char*
+_vte_terminal_get_text_range_format_full(VteTerminal *terminal,
+                                         VteFormat format,
+                                         long start_row,
+                                         long start_col,
+                                         long end_row,
+                                         long end_col,
+                                         bool block_mode,
+                                         gsize* length) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+        g_return_val_if_fail(check_enum_value(format), nullptr);
+
+        if (length)
+                *length = 0;
+
+        VteCharAttrList attributes;
+        vte_char_attr_list_init(&attributes);
+
+        auto const impl = IMPL(terminal);
+        auto text = vte::take_freeable(g_string_new(nullptr));
+        impl->get_text(start_row,
+                       start_col,
+                       end_row,
+                       end_col,
+                       block_mode,
+                       false /* preserve_empty */,
+                       text.get(),
+                       format == VTE_FORMAT_HTML ? &attributes : nullptr);
+
+        if (format == VTE_FORMAT_HTML)
+                text = vte::take_freeable(impl->attributes_to_html(text.get(), &attributes));
+
+        vte_char_attr_list_clear(&attributes);
+
+        return vte::glib::release_to_string(std::move(text), length);
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/**
+ * vte_terminal_get_text_range_format:
+ * @terminal: a #VteTerminal
+ * @format: the #VteFormat to use
+ * @start_row: the first row of the range
+ * @start_col: the first column of the range
+ * @end_row: the last row of the range
+ * @end_col: the last column of the range
+ * @length: (optional) (out): a pointer to a #gsize to store the string length
+ *
+ * Returns the specified range of text in the specified format.
+ *
+ * Returns: (transfer full) (nullable): a newly allocated string, or %NULL.
+ *
+ * Since: 0.72
+ */
+char*
+vte_terminal_get_text_range_format(VteTerminal *terminal,
+                                   VteFormat format,
+                                   long start_row,
+                                   long start_col,
+                                   long end_row,
+                                   long end_col,
+                                   gsize* length) noexcept
+{
+        return _vte_terminal_get_text_range_format_full(terminal,
+                                                        format,
+                                                        start_row,
+                                                        start_col,
+                                                        end_row,
+                                                        end_col,
+                                                        false, // block
+                                                        length);
 }
 
 /**
@@ -4134,7 +4775,7 @@ try
         g_return_if_fail(columns >= 1);
         g_return_if_fail(rows >= 1);
 
-        IMPL(terminal)->set_size(columns, rows);
+        IMPL(terminal)->set_size(columns, rows, false);
 }
 catch (...)
 {
@@ -5164,6 +5805,57 @@ catch (...)
 }
 
 /**
+ * vte_terminal_get_font_options:
+ * @terminal: a #VteTerminal
+ *
+ * Returns: (nullable): the terminal's font options, or %NULL
+ *
+ * Since: 0.74
+ */
+cairo_font_options_t const*
+vte_terminal_get_font_options(VteTerminal *terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return IMPL(terminal)->get_font_options();
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/**
+ * vte_terminal_set_font_options:
+ * @terminal: a #VteTerminal
+ * @font_options: (nullable): the font options, or %NULL
+ *
+ * Sets the terminal's font options to @options.
+ *
+ * Note that on GTK4, the terminal by default uses font options
+ * with %CAIRO_HINT_METRICS_ON set; to override that, use this
+ * function to set a #cairo_font_options_t that has
+ * %CAIRO_HINT_METRICS_OFF set.
+ *
+ * Since: 0.74
+ */
+void
+vte_terminal_set_font_options(VteTerminal *terminal,
+                              cairo_font_options_t const* font_options) noexcept
+try
+{
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+
+        if (IMPL(terminal)->set_font_options(vte::take_freeable(font_options ? cairo_font_options_copy(font_options) : nullptr)))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_FONT_OPTIONS]);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
  * vte_terminal_get_font_scale:
  * @terminal: a #VteTerminal
  *
@@ -5421,6 +6113,73 @@ catch (...)
 {
         vte::log_exception();
         return false;
+}
+
+/**
+ * vte_terminal_get_text_selected:
+ * @terminal: a #VteTerminal
+ * @format: the #VteFormat to use
+ *
+ * Gets the currently selected text in the format specified by @format.
+ * Since 0.72, this function also supports %VTE_FORMAT_HTML format.
+ *
+ * Returns: (transfer full) (nullable): a newly allocated string containing the selected text, or %NULL if there is no selection or the format is not supported
+ *
+ * Since: 0.70
+ */
+char*
+vte_terminal_get_text_selected(VteTerminal* terminal,
+                               VteFormat format) noexcept
+try
+{
+        return vte_terminal_get_text_selected_full(terminal,
+                                                   format,
+                                                   nullptr);
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/**
+ * vte_terminal_get_text_selected_full:
+ * @terminal: a #VteTerminal
+ * @format: the #VteFormat to use
+ * @length: (optional) (out): a pointer to a #gsize to store the string length
+ *
+ * Gets the currently selected text in the format specified by @format.
+ *
+ * Returns: (transfer full) (nullable): a newly allocated string containing the selected text, or %NULL if there is no selection or the format is not supported
+ *
+ * Since: 0.72
+ */
+char*
+vte_terminal_get_text_selected_full(VteTerminal* terminal,
+                                    VteFormat format,
+                                    gsize* length) noexcept
+try
+{
+        if (length)
+                *length = 0;
+
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        auto const impl = IMPL(terminal);
+        auto const selection = impl->m_selection_resolved;
+        return _vte_terminal_get_text_range_format_full(terminal,
+                                                        format,
+                                                        selection.start_row(),
+                                                        selection.start_column(),
+                                                        selection.end_row(),
+                                                        selection.end_column(),
+                                                        impl->m_selection_block_mode,
+                                                        length);
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
 }
 
 /**
@@ -5701,6 +6460,54 @@ catch (...)
 }
 
 /**
+ * vte_terminal_set_scroll_on_insert:
+ * @terminal: a #VteTerminal
+ * @scroll: whether the terminal should scroll on insert
+ *
+ * Controls whether or not the terminal will forcibly scroll to the bottom of
+ * the viewable history when text is inserted, e.g. by a paste.
+ *
+ * Since: 0.76
+ */
+void
+vte_terminal_set_scroll_on_insert(VteTerminal *terminal,
+                                  gboolean scroll) noexcept
+try
+{
+	g_return_if_fail(VTE_IS_TERMINAL(terminal));
+
+        if (IMPL(terminal)->set_scroll_on_insert(scroll != false))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_SCROLL_ON_INSERT]);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
+ * vte_terminal_get_scroll_on_insert:
+ * @terminal: a #VteTerminal
+ *
+ * Returns: whether or not the terminal will forcibly scroll to the bottom of
+ * the viewable history when the new data is received from the child.
+ *
+ * Since: 0.76
+ */
+gboolean
+vte_terminal_get_scroll_on_insert(VteTerminal *terminal) noexcept
+try
+{
+    g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+    return IMPL(terminal)->m_scroll_on_insert;
+}
+catch (...)
+{
+        vte::log_exception();
+        return false;
+}
+
+
+/**
  * vte_terminal_set_scroll_on_keystroke:
  * @terminal: a #VteTerminal
  * @scroll: whether the terminal should scroll on keystrokes
@@ -5708,6 +6515,8 @@ catch (...)
  * Controls whether or not the terminal will forcibly scroll to the bottom of
  * the viewable history when the user presses a key.  Modifier keys do not
  * trigger this behavior.
+ *
+ * Since: 0.52
  */
 void
 vte_terminal_set_scroll_on_keystroke(VteTerminal *terminal,
@@ -5754,6 +6563,8 @@ catch (...)
  *
  * Controls whether or not the terminal will forcibly scroll to the bottom of
  * the viewable history when the new data is received from the child.
+ *
+ * Since: 0.52
  */
 void
 vte_terminal_set_scroll_on_output(VteTerminal *terminal,
@@ -6010,8 +6821,6 @@ catch (...)
         return vte::glib::set_error_from_exception(error);
 }
 
-#if VTE_GTK == 3
-
 /**
  * vte_terminal_set_clear_background:
  * @terminal: a #VteTerminal
@@ -6078,8 +6887,6 @@ catch (...)
         *color = {0., 0., 0., 1.};
 }
 
-#endif /* VTE_GTK == 3 */
-
 /**
  * vte_terminal_set_enable_sixel:
  * @terminal: a #VteTerminal
@@ -6094,7 +6901,12 @@ vte_terminal_set_enable_sixel(VteTerminal *terminal,
                               gboolean enabled) noexcept
 try
 {
+#if WITH_SIXEL
         g_return_if_fail(VTE_IS_TERMINAL(terminal));
+
+        if (WIDGET(terminal)->set_sixel_enabled(enabled != FALSE))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_ENABLE_SIXEL]);
+#endif
 }
 catch (...)
 {
@@ -6105,7 +6917,7 @@ catch (...)
  * vte_terminal_get_enable_sixel:
  * @terminal: a #VteTerminal
  *
- * Returns: %FALSE
+ * Returns: %TRUE if SIXEL image support is enabled, %FALSE otherwise
  *
  * Since: 0.62
  */
@@ -6113,7 +6925,13 @@ gboolean
 vte_terminal_get_enable_sixel(VteTerminal *terminal) noexcept
 try
 {
+#if WITH_SIXEL
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), FALSE);
+
+        return WIDGET(terminal)->sixel_enabled();
+#else
         return false;
+#endif
 }
 catch (...)
 {
@@ -6121,147 +6939,386 @@ catch (...)
         return false;
 }
 
-namespace vte {
-
-using namespace std::literals;
-
-static void
-exception_append_to_string(std::exception const& e,
-                           std::string& what,
-                           int level = 0)
+template<>
+constexpr bool check_enum_value<VteAlign>(VteAlign value) noexcept
 {
-        if (level > 0)
-                what += ": "sv;
-        what += e.what();
-
-        try {
-                std::rethrow_if_nested(e);
-        } catch (std::bad_alloc const& en) {
-                g_error("Allocation failure: %s\n", what.c_str());
-        } catch (std::exception const& en) {
-                exception_append_to_string(en, what, level + 1);
-        } catch (...) {
-                what += ": Unknown nested exception"sv;
+        switch (value) {
+        case VTE_ALIGN_START:
+        case VTE_ALIGN_CENTER:
+        case VTE_ALIGN_END:
+                return true;
+        default:
+                return false;
         }
 }
 
-#ifdef VTE_DEBUG
-
-void log_exception(char const* func,
-                   char const* filename,
-                   int const line) noexcept
-try
-{
-        auto what = std::string{};
-
-        try {
-                throw; // rethrow current exception
-        } catch (std::bad_alloc const& e) {
-                g_error("Allocation failure: %s\n", e.what());
-        } catch (std::exception const& e) {
-                exception_append_to_string(e, what);
-        } catch (...) {
-                what = "Unknown exception"sv;
-        }
-
-        _vte_debug_print(VTE_DEBUG_EXCEPTIONS,
-                         "Caught exception in %s [%s:%d]: %s\n",
-                         func, filename, line, what.c_str());
-}
-catch (...)
-{
-        _vte_debug_print(VTE_DEBUG_EXCEPTIONS,
-                         "Caught exception while logging an exception in %s [%s:%d]\n",
-                         func, filename, line);
-}
-
-#else
-
-static void
-log_exception(std::exception const& e)
-{
-        try {
-                std::rethrow_if_nested(e);
-        } catch (std::bad_alloc const& en) {
-                g_error("Allocation failure: %s\n", e.what());
-        } catch (std::exception const& en) {
-                log_exception(en);
-        } catch (...) {
-        }
-}
-
+/**
+ * vte_terminal_set_xalign:
+ * @terminal: a #VteTerminal
+ * @align: alignment value from #VteAlign
+ *
+ * Sets the horizontal alignment of @terminal within its allocation.
+ *
+ * Note: %VTE_ALIGN_START_FILL is not supported, and will be treated
+ *   like %VTE_ALIGN_START.
+ *
+ * Since: 0.76
+ */
 void
-log_exception() noexcept
+vte_terminal_set_xalign(VteTerminal* terminal,
+                        VteAlign align) noexcept
 try
 {
-        try {
-                throw; // rethrow current exception
-        } catch (std::bad_alloc const& e) {
-                g_error("Allocation failure: %s\n", e.what());
-        } catch (std::exception const& e) {
-                log_exception(e);
-        } catch (...) {
-        }
-}
-catch (...)
-{
-}
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+        g_return_if_fail(check_enum_value(align));
 
-#endif /* VTE_DEBUG */
-
-namespace glib {
-
-bool set_error_from_exception(GError** error
-#ifdef VTE_DEBUG
-                              , char const* func
-                              , char const* filename
-                              , int const line
-#endif
-                              ) noexcept
-try
-{
-        auto what = std::string{};
-
-        try {
-                throw; // rethrow current exception
-        } catch (std::bad_alloc const& e) {
-                g_error("Allocation failure: %s\n", e.what());
-        } catch (std::exception const& e) {
-                exception_append_to_string(e, what);
-        } catch (...) {
-                what = "Unknown exception"sv;
-        }
-
-#ifdef VTE_DEBUG
-        auto msg = vte::glib::take_string(g_strdup_printf("Caught exception in %s [%s:%d]: %s",
-                                                          func, filename, line,
-                                                          what.c_str()));
-#else
-        auto msg = vte::glib::take_string(g_strdup_printf("Caught exception: %s",
-                                                          what.c_str()));
-#endif
-        auto msg_str = vte::glib::take_string(g_utf8_make_valid(msg.get(), -1));
-        g_set_error_literal(error,
-                            G_IO_ERROR,
-                            G_IO_ERROR_FAILED,
-                            msg_str.get());
-        _vte_debug_print(VTE_DEBUG_EXCEPTIONS, "%s", msg_str.get());
-
-        return false;
+        if (WIDGET(terminal)->set_xalign(align))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_XALIGN]);
 }
 catch (...)
 {
         vte::log_exception();
-#ifdef VTE_DEBUG
-        g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                    "Caught exception while logging an exception in %s [%s:%d]\n",
-                    func, filename, line);
-#else
-        g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                            "Caught exception while logging an exception");
-#endif
+}
+
+/**
+ * vte_terminal_get_xalign:
+ * @terminal: a #VteTerminal
+ *
+ * Returns: the horizontal alignment of @terminal within its allocation
+ *
+ * Since: 0.76
+ */
+VteAlign
+vte_terminal_get_xalign(VteTerminal* terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), VTE_ALIGN_START);
+
+        return WIDGET(terminal)->xalign();
+}
+catch (...)
+{
+        vte::log_exception();
+        return VTE_ALIGN_START;
+}
+
+/**
+ * vte_terminal_set_yalign:
+ * @terminal: a #VteTerminal
+ * @align: alignment value from #VteAlign
+ *
+ * Sets the vertical alignment of @terminal within its allocation.
+ *
+ * Since: 0.76
+ */
+void
+vte_terminal_set_yalign(VteTerminal* terminal,
+                        VteAlign align) noexcept
+try
+{
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+        g_return_if_fail(check_enum_value(align));
+
+        if (WIDGET(terminal)->set_yalign(align))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_YALIGN]);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
+ * vte_terminal_get_yalign:
+ * @terminal: a #VteTerminal
+ *
+ * Returns: the vertical alignment of @terminal within its allocation
+ *
+ * Since: 0.76
+ */
+VteAlign
+vte_terminal_get_yalign(VteTerminal* terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), VTE_ALIGN_START);
+
+        return WIDGET(terminal)->yalign();
+}
+catch (...)
+{
+        vte::log_exception();
+        return VTE_ALIGN_START;
+}
+
+/**
+ * vte_terminal_set_xfill:
+ * @terminal: a #VteTerminal
+ * @fill: fillment value from #VteFill
+ *
+ * Sets the horizontal fillment of @terminal within its allocation.
+ *
+ * Note: %VTE_FILL_START_FILL is not supported, and will be treated
+ *   like %VTE_FILL_START.
+ *
+ * Since: 0.76
+ */
+void
+vte_terminal_set_xfill(VteTerminal* terminal,
+                        gboolean fill) noexcept
+try
+{
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+
+        if (WIDGET(terminal)->set_xfill(fill != false))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_XFILL]);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
+ * vte_terminal_get_xfill:
+ * @terminal: a #VteTerminal
+ *
+ * Returns: the horizontal fillment of @terminal within its allocation
+ *
+ * Since: 0.76
+ */
+gboolean
+vte_terminal_get_xfill(VteTerminal* terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), true);
+
+        return WIDGET(terminal)->xfill();
+}
+catch (...)
+{
+        vte::log_exception();
+        return true;
+}
+
+/**
+ * vte_terminal_set_yfill:
+ * @terminal: a #VteTerminal
+ * @fill: fillment value from #VteFill
+ *
+ * Sets the vertical fillment of @terminal within its allocation.
+ * Note that yfill is only supported with yalign set to
+ * %VTE_ALIGN_START, and is ignored for all other yalign values.
+ *
+ * Since: 0.76
+ */
+void
+vte_terminal_set_yfill(VteTerminal* terminal,
+                        gboolean fill) noexcept
+try
+{
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+
+        if (WIDGET(terminal)->set_yfill(fill != false))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_YFILL]);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
+ * vte_terminal_get_yfill:
+ * @terminal: a #VteTerminal
+ *
+ * Returns: the vertical fillment of @terminal within its allocation
+ *
+ * Since: 0.76
+ */
+gboolean
+vte_terminal_get_yfill(VteTerminal* terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), true);
+
+        return WIDGET(terminal)->yfill();
+}
+catch (...)
+{
+        vte::log_exception();
+        return true;
+}
+
+/**
+ * vte_terminal_set_context_menu_model: (attributes org.gtk.Method.set_property=context-menu-model)
+ * @terminal: a #VteTerminal
+ * @model: (nullable): a #GMenuModel
+ *
+ * Sets @model as the context menu model in @terminal.
+ * Use %NULL to unset the current menu model.
+ *
+ * Since: 0.76
+ */
+void
+vte_terminal_set_context_menu_model(VteTerminal* terminal,
+                                    GMenuModel* model) noexcept
+try
+{
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+        g_return_if_fail(model == nullptr || G_IS_MENU_MODEL(model));
+
+        if (WIDGET(terminal)->set_context_menu_model(vte::glib::make_ref(model)))
+            g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_CONTEXT_MENU_MODEL]);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
+ * vte_terminal_get_context_menu_model: (attributes org.gtk.Method.get_property=context-menu-model)
+ * @terminal: a #VteTerminal
+ *
+ * Returns: (nullable) (transfer none): the context menu model, or %NULL
+ *
+ * Since: 0.76
+ */
+GMenuModel*
+vte_terminal_get_context_menu_model(VteTerminal* terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return WIDGET(terminal)->get_context_menu_model();
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/**
+ * vte_terminal_set_context_menu: (attributes org.gtk.Method.set_property=context-menu)
+ * @terminal: a #VteTerminal
+ * @menu: (nullable): a menu
+ *
+ * Sets @menu as the context menu in @terminal.
+ * Use %NULL to unset the current menu.
+ *
+ * Note that a menu model set with vte_terminal_set_context_menu_model()
+ * takes precedence over a menu set using this function.
+ *
+ * Since: 0.76
+ */
+void
+vte_terminal_set_context_menu(VteTerminal* terminal,
+                              GtkWidget* menu) noexcept
+try
+{
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+#if VTE_GTK == 3
+        g_return_if_fail(menu == nullptr || GTK_IS_MENU(menu));
+#elif VTE_GTK == 4
+        g_return_if_fail(menu == nullptr || GTK_IS_POPOVER(menu));
+#endif // VTE_GTK
+
+        if (WIDGET(terminal)->set_context_menu(vte::glib::make_ref_sink(menu)))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_CONTEXT_MENU]);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
+ * vte_terminal_get_context_menu: (attributes org.gtk.Method.get_property=context-menu)
+ * @terminal: a #VteTerminal
+ *
+ * Returns: (nullable) (transfer none): the context menu, or %NULL
+ *
+ * Since: 0.76
+ */
+GtkWidget*
+vte_terminal_get_context_menu(VteTerminal* terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return WIDGET(terminal)->get_context_menu();
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/**
+ * VteEventContext:
+ *
+ * Provides context information for a context menu event.
+ *
+ * Since: 0.76
+ */
+
+G_DEFINE_POINTER_TYPE(VteEventContext, vte_event_context);
+
+static auto get_event_context(VteEventContext const* context)
+{
+        return reinterpret_cast<vte::platform::EventContext const*>(context);
+}
+
+#define EVENT_CONTEXT_IMPL(context) (get_event_context(context))
+
+#if VTE_GTK == 3
+
+/**
+ * vte_event_context_get_event:
+ * @context: the #VteEventContext
+ *
+ * Returns: (transfer none): the #GdkEvent that triggered the event, or %NULL if it was not
+ *   triggered by an event
+ *
+ * Since: 0.76
+ */
+GdkEvent*
+vte_event_context_get_event(VteEventContext const* context) noexcept
+try
+{
+        g_return_val_if_fail(context, nullptr);
+
+        return EVENT_CONTEXT_IMPL(context)->platform_event();
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+#elif VTE_GTK == 4
+
+/**
+ * vte_event_context_get_coordinates:
+ * @context: the #VteEventContext
+ * @x: (nullable): location to store the X coordinate
+ * @y: (nullable): location to store the Y coordinate
+ *
+ * Returns: %TRUE if the event has coordinates attached
+ *   that are within the terminal, with @x and @y filled in;
+ *   %FALSE otherwise
+ *
+ * Since: 0.76
+ */
+gboolean
+vte_event_context_get_coordinates(VteEventContext const* context,
+                                  double* x,
+                                  double* y) noexcept
+try
+{
+        g_return_val_if_fail(context, false);
+
+        return EVENT_CONTEXT_IMPL(context)->get_coords(x, y);
+}
+catch (...)
+{
+        vte::log_exception();
         return false;
 }
 
-} // namespace glib
-} // namespace vte
+#endif /* VTE_GTK */
