@@ -1,4 +1,1070 @@
-commit de5df02c42eb5de98f92f5cb4520fc963a54ab51 (HEAD -> master, tag: 0.75.0)
+commit acad28244fc5015fd547983037ed3029c624a5b3 (HEAD -> vte-0-76, tag: 0.75.92)
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Sat Mar 2 21:03:55 2024 +0100
+
+    fonts: Allow unknown coverage to silently pass through
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2747
+    (cherry picked from commit a9104708265d49cd0bcacfb6e3dd7dfddc27dbb1)
+
+ src/drawing-cairo.cc | 1 -
+ src/drawing-gsk.cc   | 3 ++-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+commit ae78b60049aed5a82858effc2027e9d2b707fd4e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Mar 2 19:07:25 2024 +0100
+
+    widget: Fix end alignment
+    
+    This fixes a regression from commit
+    5a242c232bec00a905176f26a30630ff66606a95.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2752
+
+ src/vteinternal.hh | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+commit 4f6ea6d22125909ef2881cbe1ee1cdda3967400f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Mar 2 19:07:25 2024 +0100
+
+    app: Rework argument parsing
+    
+    ... and add loading/saving options from/to a key file.
+
+ src/app/app.cc   | 1004 ++++++++++++++++++++++++++++++++++++++++++++----------
+ src/glib-glue.hh |    1 +
+ 2 files changed, 816 insertions(+), 189 deletions(-)
+
+commit fb9693eca240f7892b584ae6f33f7bc389fa9533
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Feb 28 09:21:06 2024 +0100
+
+    widget: gtk4: Fix the look of outline block cursor in the first column
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2749
+    
+    (cherry picked from commit bcf9db0d628478c7870ed1c84c1c454a9120594f)
+
+ src/vte.cc | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+commit 9d0ed85d89d4b3b476e57536e6219a9a2d7f6de4
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Feb 27 11:58:02 2024 -0800
+
+    ringview: inline get_bidirow()
+    
+    This is called frequently during Terminal::draw() and reduces overhead
+    there on release builds a decent amount. I didn't quanitfy exactly without
+    bidi patches applied, but it approaches double digits.
+
+ src/ringview.cc | 10 ----------
+ src/ringview.hh |  9 ++++++++-
+ 2 files changed, 8 insertions(+), 11 deletions(-)
+
+commit 529c4b2e6121187fea6779f73552dbf11c3d524b
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Feb 27 11:15:51 2024 -0800
+
+    bidi: inline log2vis() and vis2log()
+    
+    These are called frequently during drawing. Inlining the fast path is
+    extremely useful here to keep that overhead low.
+    
+    Hoist it into the caller for roughly a 4.5% reduction in drawing time
+    using scrolling a large file in vim as the test case.
+
+ src/bidi.cc | 24 ------------------------
+ src/bidi.hh | 22 ++++++++++++++++++++--
+ 2 files changed, 20 insertions(+), 26 deletions(-)
+
+commit 74d223ae10564d1d5b6cde67e28a001edcb583d1
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Feb 27 10:07:40 2024 -0800
+
+    terminal: inline hot path of cell_is_selected_log()
+    
+    This function appears to be called a lot, especially during high scrolling
+    scenarios (such as ctrl+f/ctrl+b in vim). There is a typical fast path
+    which is that ring is updated and there is no selection. Hoist that into
+    the callers and leave the selection case behind a function call.
+    
+    This shaves about 1.5% of application samples off time spent in
+    Terminal::draw().
+
+ src/vte.cc         |  2 +-
+ src/vteinternal.hh | 20 ++++++++++++++++++--
+ 2 files changed, 19 insertions(+), 3 deletions(-)
+
+commit 169b83d3a31c5a43a9d0f8ea178d0db8335036bc
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Feb 27 10:13:13 2024 -0800
+
+    terminal: annotate unlikely paths in determine_colors()
+    
+    This gets called extremly often so ensuring that we keep the common path
+    tight is important. This is good for about 2% of application samples
+    in the case of scrolling with ctrl+f/ctrl+b in vim.
+
+ src/vte.cc | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+commit c33b94d17d3c80b8bd4b05f0f2e2e26bc0948b1c
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Feb 27 10:33:03 2024 -0800
+
+    terminal: remove determine_colors() invisible check
+    
+    This is called very frequently.
+    
+    The invisible check, which should be unnecessary, is about 2.8% of
+    application samples in a tight scrolling loop with vim doing
+    ctrl+f/ctrl+b.
+
+ src/vte.cc | 9 ---------
+ 1 file changed, 9 deletions(-)
+
+commit b3f8c243a16c611ef644f6339cf191d6eab07908
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sat Feb 24 18:56:41 2024 +0100
+
+    Revert "widget: Limit select-all to the writable region not including the scrollback"
+    
+    This reverts commit caf8a6a7a17a3f70fa5fc611c71ffb27a5cfee75.
+    
+    Also bump GLib requirement to include their fix, and add an API comment
+    discouraging the use of large scrollback sizes.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2504
+    
+    (cherry picked from commit 4637dd9729fbf9001154a1d962746227860ffb4b)
+
+ meson.build   | 8 ++++----
+ src/vte.cc    | 9 +++------
+ src/vtegtk.cc | 3 +++
+ 3 files changed, 10 insertions(+), 10 deletions(-)
+
+commit cedcd4537c200af3960b83d6902c9c629f777dd1
+Author: Marko Mäkelä <msmakela@gmail.com>
+Date:   Sat Feb 24 15:37:59 2024 +0100
+
+    vte.sh: Avoid warning if shell is configured with 'set -u'
+    
+    Followup of commit e148105691926cbd4861e7dc26dec194f59c7f14.
+    
+    Bug-Debian: https://bugs.debian.org/1063941
+    
+    (cherry picked from commit 2010409c9f708f840fb5b30b3cb6ef5628765ec4)
+
+ src/vte.sh.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit cf7984d3be7b4902769ad8566f44e1487ad84d7f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Feb 22 21:54:49 2024 +0100
+
+    widget: Set scroll-on-insert to false by default
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2743
+    (cherry picked from commit e55af605d1139d86b388ccfb4eefafe879952fa0)
+    (cherry picked from commit b6d52dc3bab5bab9c902abedeff62eda16238d1e)
+
+ src/vtegtk.cc      | 2 +-
+ src/vteinternal.hh | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+commit 6581fea7a4450a724ec3a4bc4859156722d1df1d
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Wed Feb 21 14:26:07 2024 -0800
+
+    scheduler: add 10hz fallback scheduler
+    
+    If we fail to get updates from the window manager and/or compositor, then
+    fallback to a 10hz scheduler that will ensure we still make progress on
+    incoming PTY data.
+    
+    This fixes a situation where the GdkFrameClock will not advance while the
+    window is hidden in GNOME Shell using Super+H.
+
+ src/meson.build    |   2 +
+ src/scheduler.cc   | 158 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/scheduler.h    |  31 +++++++++++
+ src/vte.cc         |  24 +++-----
+ src/vteinternal.hh |   2 +-
+ 5 files changed, 201 insertions(+), 16 deletions(-)
+
+commit 7329a0c9fcb32ace5c274c6a884ba69448b541c9
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Feb 12 22:20:41 2024 +0100
+
+    widget: Try to fix a build failure on 32-bit archs
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2722
+    
+    (cherry picked from commit e7e8a8c7ade54ca89ed38a18729aab891fb96f92)
+
+ src/vte.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit ceaf69ac5486ae9cee6a67aa863946149c459275
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Feb 19 09:40:25 2024 +0100
+
+    ring: Only occasionally advance the stream tails
+    
+    This results in a slight performance improvement.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2715
+    
+    (cherry picked from commit c2343bf3854d1f4f35e4afe2de397151dafc0747)
+
+ src/ring.cc | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+commit 07ca9e0da93ab69fdc9b9eb284afa163ee59fa74
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Feb 19 09:38:31 2024 +0100
+
+    lib: Batch handling of single-width characters
+    
+    Runs of single-width printable characters are handled in a special
+    code path for increased performance.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2693
+    
+    (cherry picked from commit 77a8f94acb85d03ebf03f58e03069357f3c2072a)
+
+ src/chunk.hh       |  3 ++
+ src/vte.cc         | 88 +++++++++++++++++++++++++++++++++++++++++-------------
+ src/vteinternal.hh |  4 +--
+ 3 files changed, 73 insertions(+), 22 deletions(-)
+
+commit 10931c693a8278969c28f7235cceaa150df7da82
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Feb 19 09:38:26 2024 +0100
+
+    lib: Remember the Terminal in ProcessingContext
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2693
+    
+    (cherry picked from commit c89a24786586ab2aa23752558a0f147c98cee5d2)
+
+ src/vte.cc | 43 +++++++++++++++++++++++--------------------
+ 1 file changed, 23 insertions(+), 20 deletions(-)
+
+commit c8dab1a4be20759eb3cd67c5dcf51820f57784dd
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Feb 19 09:11:40 2024 +0100
+
+    widget: Faster rewrapping on resize
+    
+    Introduce a special fast code path for paragraphs that will fit in a
+    single line at the new window size. This speeds up the rewrapping of
+    such paragraphs by about 5-10x.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2657
+    
+    (cherry picked from commit ffab62df110097185b14b061c0858a3552c08b61)
+
+ src/ring.cc | 24 +++++++++++++++++++++---
+ src/ring.hh |  7 ++++---
+ 2 files changed, 25 insertions(+), 6 deletions(-)
+
+commit 0614aeb9d09c8f501292e81182dad2c8316d4e80
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Feb 19 09:02:06 2024 +0100
+
+    widget: gtk4: Fix double and triple click handling
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2648
+    
+    (cherry picked from commit ab6dcbc16e7a3d4a2c7a554131ea202b0b7e9c96)
+
+ src/vte.cc | 20 ++++++++++++++++----
+ 1 file changed, 16 insertions(+), 4 deletions(-)
+
+commit b29a3a263444ba6caea973870538735789706d77
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Feb 19 09:02:02 2024 +0100
+
+    widget: Bit of cleanup around the previous fix
+    
+    (cherry picked from commit d9f753e1cbfbc0ad9cec3503e7fff34d91a538b2)
+
+ src/vte.cc | 7 ++-----
+ 1 file changed, 2 insertions(+), 5 deletions(-)
+
+commit 9006628253b8bda37d526b5faa615a29d8594e19
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Feb 19 09:01:36 2024 +0100
+
+    widget: Make backwards search find wrapped words
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/104
+    
+    (cherry picked from commit 08a78ced0f94ffdffe476f47dd61d2ec5d841a95)
+
+ src/vte.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 14725febff3ca731a8b49b29b9bbaad58a90f31e
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Mon Feb 19 08:42:26 2024 +0100
+
+    Revert "build: Remove extra debug compile option"
+    
+    This reverts commit 8d5697550f1460480792763767bd638e07a4a624
+    and renames the option from debugg to dbg.
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2696
+    
+    (cherry picked from commit 019551eabf18510964bf4542ac70112a5f3281c2)
+
+ meson.build       | 2 +-
+ meson_options.txt | 5 +++--
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+commit 0f5bbb762f2fafc49787093a9974cd38e53c5529
+Author: Samuel Thibault <samuel.thibault@ens-lyon.org>
+Date:   Thu Jan 4 11:49:56 2024 +0100
+
+    widget: a11y: Add missing text changes on scrolling with modifications
+    
+    When vte_terminal_accessible_text_scrolled gets called, the terminal
+    might have not only scrolled, but also changed.  We thus have to check
+    whether the remaining text really is exactly the same as expected.
+    
+    We here support simple diff for the common case: an ample head and/or tail
+    content is the same. This allows to emit only the modification, which is
+    usually relatively small.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/issues/88
+
+ src/vteaccess.cc | 267 ++++++++++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 214 insertions(+), 53 deletions(-)
+
+commit b94a8fb5091d014891fa67776bb693e3edbc1760
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Feb 11 15:26:32 2024 +0100
+
+    widget: Add type annotation to setup-context-menu signal
+    
+    gobject-introspection seems to have a problem with custom pointer
+    types (G_DEFINE_POINTER_TYPE), leading to this warning when building
+    vte's GIR:
+    
+    <unknown>:: Warning: Vte: (Signal)setup-context-menu: argument context: Unresolved type: 'VteEventContext'
+    
+    Adding the explicit type annotation to the parameter in the signal's
+    docs comment appears to fix this problem.
+    
+    (cherry picked from commit c7225d241f713e898fbf840835f719f42a5dd748)
+
+ src/vtegtk.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit e02eed7b389249a7208876f510eefd7103e92421
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Feb 11 13:20:24 2024 +0100
+
+    build: Post release version bump
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 4ebb548e28db550257d67e5fa329b80de4d7c10e (tag: 0.75.91)
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Feb 11 13:18:36 2024 +0100
+
+    Revert "lib: Add a simple UUID class"
+    
+    This reverts commit 68d4539c6ebe9547abb19385bd6e8bfbca843f6e.
+
+ src/cxx-utils.hh       |  29 -----
+ src/fwd.hh             |   2 -
+ src/glib-glue.hh       |   1 -
+ src/meson.build        |  25 +---
+ src/uuid-test.cc       | 166 ------------------------
+ src/uuid.cc            | 214 -------------------------------
+ src/uuid.hh            | 211 ------------------------------
+ src/vte-glue.hh        |   1 -
+ src/vte/meson.build    |   1 -
+ src/vte/vte.h          |   1 -
+ src/vte/vteenums.h     |  18 ---
+ src/vte/vteuuid.h      |  77 -----------
+ src/vteuuid.cc         | 339 -------------------------------------------------
+ src/vteuuidinternal.hh |  30 -----
+ 14 files changed, 1 insertion(+), 1114 deletions(-)
+
+commit 2ce1d8e9de688f7c9e7d26647494ed259d209026
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Feb 11 13:18:29 2024 +0100
+
+    Revert "lib: Add some colour helper classes"
+    
+    This reverts commit b8f31a0459d45f03183af067cb0fc7847b2a8b84.
+
+ src/color-names-tests.hh |  853 ---------------------------
+ src/color-names.hh       | 1443 ----------------------------------------------
+ src/color-parser.cc      |  477 ---------------
+ src/color-parser.hh      |   54 --
+ src/color-test.cc        |  217 -------
+ src/color.hh             |  181 ------
+ src/meson.build          |   21 -
+ 7 files changed, 3246 deletions(-)
+
+commit db7726eacea84e1f397829c1dc75dd1a66191ec3
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Feb 11 12:25:52 2024 +0100
+
+    build: Post release version bump
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit d81534141c572ec1f317aaef37ee25a912178603 (tag: 0.75.90)
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sat Feb 10 23:09:53 2024 +0100
+
+    vte.sh: Consistent indentation
+    
+    (cherry picked from commit 9e8824480ef51374bf9b42ad8ee59f64d50456b1)
+
+ src/vte.sh.in | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+commit ba7a6e904235e50cd2c98109d7cff50902d42531
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sat Feb 10 23:09:50 2024 +0100
+
+    vte.sh: Set up bash and zsh for OSC 133 shell integration
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2681
+    
+    (cherry picked from commit 4d4e4807e1205ea10bca821af30caa0ec70325db)
+
+ src/vte.sh.in | 53 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+
+commit e1d5418e0cdabccb39b743415b4bb18593935f8c
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sat Feb 10 23:09:47 2024 +0100
+
+    emulation: Support conditional new paragraph
+    
+    Add OSC 133 L escape sequence to maybe move down the cursor to ensure
+    it's at the beginning of a paragraph.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2681
+    
+    (cherry picked from commit 3dce4fa8eb14b658fe3122311915bbc9f6e18502)
+
+ src/vteseq.cc | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+commit 6e8a2adb3fe721e30872f7120b1f13387f3db13b
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sat Feb 10 23:09:44 2024 +0100
+
+    emulation: Track shell integration escape sequences
+    
+    Track OSC 133 A (prompt), B (command), C (output) escape sequences.
+    Add methods to scroll to previous/next prompt.
+    Hook these up to Shift+Ctrl+Left/Right keypresses.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2681
+    
+    (cherry picked from commit 7808c6d2fca8b189e305c049ca82f1450adf5db1)
+
+ src/attr.hh        | 19 +++++++++++++++++
+ src/cell.hh        |  1 +
+ src/parser-osc.hh  |  2 +-
+ src/ring.cc        | 45 ++++++++++++++++++++++++++++++++++++++++
+ src/ring.hh        |  1 +
+ src/vte.cc         | 61 ++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ src/vteinternal.hh |  7 ++++++-
+ src/vteseq.cc      | 24 ++++++++++++++++++++-
+ 8 files changed, 155 insertions(+), 5 deletions(-)
+
+commit 0534ec3ca3b55576e3775bd35a292a1ec4ea90f3
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Sat Feb 10 23:09:38 2024 +0100
+
+    lib: Remove pointless "maybe" in some method names
+    
+    (cherry picked from commit aad9e79d8f7006f986b03c2a0de473a29526491d)
+
+ src/vte.cc         | 18 +++++++++---------
+ src/vteinternal.hh |  4 ++--
+ 2 files changed, 11 insertions(+), 11 deletions(-)
+
+commit 8c0c6c5fbae68e1760dde001ee4f3b26016a7ebe
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Feb 10 19:07:02 2024 +0100
+
+    build: Version 0.75.90
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit e264c6ed36c1a5ada131d5ee781645fff4ce9e78
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Feb 10 19:07:02 2024 +0100
+
+    all: Remove SIXEL support from stable branch
+    
+    The SIXEL support is not in a releasable state with
+    important and fundamental problems still unsolved.
+    
+    (cherry picked from commit d578bd30b18a0d040305f356a3327fbd011e5451)
+    (cherry picked from commit ba1e05c9ad34d0e48a823ad5a67b96baa166de24)
+    (cherry picked from commit 6d80d3bca78397b2073f61e7954f3ceb45a8cb37)
+    (cherry picked from commit d90b9d1139c3ce413670f34588506741673919bb)
+    (cherry picked from commit 59d1403c455801dbbb64dadb55478bb0e5e96966)
+    (cherry picked from commit e0720853f59ebf54e022b4cd164de2d9b8a21fc1)
+
+ meson.build          |    2 -
+ meson_options.txt    |    7 -
+ src/app/app.cc       |    6 -
+ src/debug.cc         |    1 -
+ src/debug.h          |    1 -
+ src/fwd.hh           |    8 -
+ src/image.cc         |   68 ---
+ src/image.hh         |  102 ----
+ src/meson.build      |   56 --
+ src/parser-cat.cc    |  327 -----------
+ src/parser-seq.py    |    2 +-
+ src/pty.cc           |    4 -
+ src/ring.cc          |  225 +------
+ src/ring.hh          |   46 --
+ src/sixel-context.cc |  516 ----------------
+ src/sixel-context.hh |  662 ---------------------
+ src/sixel-fuzzer.cc  |  763 ------------------------
+ src/sixel-parser.hh  |  669 ---------------------
+ src/sixel-test.cc    | 1597 --------------------------------------------------
+ src/vte.cc           |  187 +-----
+ src/vtedefines.hh    |    6 -
+ src/vtegtk.cc        |   26 +-
+ src/vteinternal.hh   |   38 --
+ src/vteseq.cc        |  224 +------
+ src/widget.hh        |    3 -
+ 25 files changed, 18 insertions(+), 5528 deletions(-)
+
+commit 0d56a309f55063a94c73b9f584d4d9b0fec92b8f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Feb 10 19:07:02 2024 +0100
+
+    widget: Remove termprops from stable branch
+    
+    This reverts commit 713dafdacc4c5264376a539e562f2b3cf0e162be.
+    This reverts commit 6e68f077dc315eb02628c59569c4ebfdcdffc7f8.
+    This reverts commit 90904e30eb3af45a546cce6847c520320f5571c5.
+    This reverts commit 130adb28c82b33335a7bcd2b90e08e5104f11dec.
+    This reverts commit 50d9b3b6ca3a8529ff4c33da609617f4211348c5.
+    This reverts commit 03356b77ba7ffc7b098cc876c5e1306f83a759fb.
+    This reverts commit 20cd61065c33fadfa29d81b23ca60887bb87b873.
+    This reverts commit 01ca39e2b6523b246e6a2ea251ffbe9698bba29e.
+    This reverts commit 1ce1cccd0557e60db4a3ef6825fa91026439cae0.
+    This reverts commit 90543ab2a3de9635993950d8afb231fcb11bb915.
+
+ src/app/app.cc        |   51 --
+ src/color-parser.hh   |   14 -
+ src/color.hh          |   14 +-
+ src/fwd.hh            |    7 -
+ src/marshal.list      |    1 -
+ src/meson.build       |   19 +-
+ src/parser-osc.hh     |    1 -
+ src/parser.hh         |   12 -
+ src/termprops-test.cc |  352 ----------
+ src/termprops.hh      |  462 -------------
+ src/vte.cc            |   25 +-
+ src/vte/vteenums.h    |   45 +-
+ src/vte/vteglobals.h  |   34 -
+ src/vte/vteterminal.h |  137 +---
+ src/vtedefines.hh     |    2 -
+ src/vtegtk.cc         | 1746 +------------------------------------------------
+ src/vtegtk.hh         |    2 -
+ src/vteinternal.hh    |   61 +-
+ src/vteseq.cc         |  107 ---
+ src/widget.cc         |   13 -
+ src/widget.hh         |   32 -
+ 21 files changed, 16 insertions(+), 3121 deletions(-)
+
+commit 713dafdacc4c5264376a539e562f2b3cf0e162be
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Feb 8 21:55:53 2024 +0100
+
+    widget: termprops: Reset termprops on terminal reset
+    
+    When resetting the terminal (RIS, DECSTR, or DECSR) we need to also
+    reset all the termprops, and emit the change notification.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2732
+
+ src/vte.cc         | 3 +++
+ src/vtegtk.cc      | 3 +--
+ src/vteinternal.hh | 9 +++++++++
+ 3 files changed, 13 insertions(+), 2 deletions(-)
+
+commit 6e68f077dc315eb02628c59569c4ebfdcdffc7f8
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Thu Feb 8 21:55:53 2024 +0100
+
+    widget: termprops: Rewrite termprop documentation
+    
+    Clarify the purpose of each property type, and the exact syntax
+    of the OSC sequence to set termprops.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2732
+
+ src/vtegtk.cc | 222 +++++++++++++++++++++++++++++++++++++++-------------------
+ 1 file changed, 149 insertions(+), 73 deletions(-)
+
+commit 90904e30eb3af45a546cce6847c520320f5571c5
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Wed Feb 7 19:28:03 2024 +0100
+
+    widget: termprops: Unify int types
+    
+    There really is no need for separate 16- and 64-bit integers.
+    Remove the 16-bit ones and only support 64-bit ones, as the
+    getters already do.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2732
+
+ src/app/app.cc        | 14 +++------
+ src/termprops-test.cc | 76 +++++++++++++--------------------------------
+ src/termprops.hh      | 19 ++++--------
+ src/vte/vteenums.h    | 12 +++-----
+ src/vtegtk.cc         | 85 +++++++++++++++------------------------------------
+ 5 files changed, 60 insertions(+), 146 deletions(-)
+
+commit 38cb502fc34fd9ad2281c29fc58e8676ae1772d5
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Wed Feb 7 14:19:19 2024 +0100
+
+    widget: Fix HTML CSS property "text-decoration-style: solid"
+
+ src/vte.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit bec7e6a27204a577425e5c29586a8ac618d6fa1d
+Author: Egmont Koblinger <egmont@gmail.com>
+Date:   Tue Feb 6 13:41:09 2024 +0100
+
+    widget,emulation: Add support for dotted and dashed underlines
+    
+    Fixes https://gitlab.gnome.org/GNOME/vte/-/issues/2639
+
+ src/attr.hh   |  4 ++--
+ src/vte.cc    | 41 +++++++++++++++++++++++++++++++++++++----
+ src/vteseq.cc |  2 +-
+ 3 files changed, 40 insertions(+), 7 deletions(-)
+
+commit 130adb28c82b33335a7bcd2b90e08e5104f11dec
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Tue Feb 6 22:32:39 2024 +0100
+
+    widget: termprops: Relax boolean value parsing
+    
+    Allow True/False and TRUE/FALSE also.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2732#note_1999752
+
+ src/termprops-test.cc | 12 +++++++++---
+ src/termprops.hh      | 10 ++++++++--
+ src/vtegtk.cc         |  3 ++-
+ 3 files changed, 19 insertions(+), 6 deletions(-)
+
+commit 50d9b3b6ca3a8529ff4c33da609617f4211348c5
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Feb 5 23:04:55 2024 +0100
+
+    widget: termprops: String value parsing fixes
+    
+    Fix parsing to reject an unescaped semicolon.
+    
+    Also, there is no need to escape the colon (':') in string values, so
+    drop the need to escape it.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2732
+
+ src/termprops-test.cc | 7 ++++---
+ src/termprops.hh      | 9 ++++-----
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+commit 03356b77ba7ffc7b098cc876c5e1306f83a759fb
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Feb 5 23:04:55 2024 +0100
+
+    widget: termprops: Add some more tests
+    
+    Check that the string value of a STRING termprop admits the
+    characters ! and = which are used in the termprop set-statement
+    to delimit the key from the value/to end the value.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2732
+
+ src/termprops-test.cc | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+commit 20cd61065c33fadfa29d81b23ca60887bb87b873
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Feb 5 23:04:55 2024 +0100
+
+    widget: termprops: Allow true/false for BOOL termprops
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2732
+
+ src/termprops-test.cc | 12 ++++++++++--
+ src/termprops.hh      |  4 ++--
+ src/vtegtk.cc         |  2 +-
+ 3 files changed, 13 insertions(+), 5 deletions(-)
+
+commit 01ca39e2b6523b246e6a2ea251ffbe9698bba29e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Feb 5 23:04:55 2024 +0100
+
+    widget: termprops: Add DOUBLE type
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2732
+
+ src/termprops-test.cc | 29 +++++++++++++++
+ src/termprops.hh      | 25 +++++++++++++
+ src/vte/vteenums.h    |  2 ++
+ src/vte/vteterminal.h | 22 ++++++++----
+ src/vtegtk.cc         | 99 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 171 insertions(+), 6 deletions(-)
+
+commit 01c5418b17b1b636de4f887f4aa3d494d12cbe78
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Feb 5 18:30:52 2024 +0100
+
+    emulation: Allow default parameter value for XTVERSION
+    
+    There is a discrepance between the xterm documentation and the actual
+    xterm behaviour in that the documentation does not mention that the
+    sequence admits a default value of 0 (to report the xterm name and
+    version), while the code does allos the user of a default param.
+    
+    Make vte follow the xterm code.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/235
+
+ src/vteseq.cc | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 33e8896684e43f49b05899641d9607ff30ffe71f
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Feb 4 10:14:35 2024 +0100
+
+    emulation: Support XTVERSION sequence
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/235
+
+ src/parser-reply.hh |  1 +
+ src/parser-seq.py   |  2 ++
+ src/vteseq.cc       | 32 ++++++++++++++++++++++++++++++--
+ 3 files changed, 33 insertions(+), 2 deletions(-)
+
+commit b443ed1c8f5f5396e4bb6c037d1608fa65d51369
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Feb 3 21:45:15 2024 +0100
+
+    emulation: Reply to DECRQPSR and DECRQTSR
+    
+    These will need to be implemented, but for now at least reply
+    with an error report so that clients listening for a reponse
+    do get one.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2616
+
+ src/parser-reply.hh |  2 +-
+ src/parser-seq.py   | 10 +++++++---
+ src/vteseq.cc       | 52 +++++++++++++++++++++++++++++-----------------------
+ 3 files changed, 37 insertions(+), 27 deletions(-)
+
+commit fe5b4c4ca43d78fa7cda012691a2837ba99a38f2
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Feb 3 21:10:25 2024 +0100
+
+    emulation: More accurate DA1 and DA2 replies
+    
+    When not in test mode, reply with a more honest level 1 response, since
+    vte doesn't implement most of the things a higher level mandates.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2724
+
+ src/vteseq.cc | 33 +++++++++++++++++++++++++--------
+ 1 file changed, 25 insertions(+), 8 deletions(-)
+
+commit 1ce1cccd0557e60db4a3ef6825fa91026439cae0
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Feb 2 23:21:52 2024 +0100
+
+    build: Work around clang being clang
+
+ src/color.hh  | 14 +++++++-------
+ src/vtegtk.cc |  4 ++--
+ 2 files changed, 9 insertions(+), 9 deletions(-)
+
+commit 8d5697550f1460480792763767bd638e07a4a624
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Feb 2 23:21:52 2024 +0100
+
+    build: Remove extra debug compile option
+    
+    Just enable debug when one of the debug buildtypes are specified.
+    
+    Fixes: https://gitlab.gnome.org/GNOME/vte/-/issues/2696
+
+ meson.build       | 2 +-
+ meson_options.txt | 3 +--
+ 2 files changed, 2 insertions(+), 3 deletions(-)
+
+commit 5a242c232bec00a905176f26a30630ff66606a95
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Feb 2 23:21:52 2024 +0100
+
+    widget: Renumber VterAlign enum
+
+ src/vte/vteenums.h | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+commit db722504dd53c54189665970119d83fc72bd2e17
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Fri Feb 2 23:21:52 2024 +0100
+
+    emulation: Also reply to DECRQSS on XTERM_MODKEYS
+    
+    ... since xterm 389 does too.
+
+ src/vteseq.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 8fc2717717ed70e0a979422f6307fab9aaad04d5
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Jan 30 20:11:35 2024 -0800
+
+    Revert "widget: Update function docs"
+    
+    This reverts commit 5f82f91b941b7c1f27c837d26441a4d5f16d619f.
+
+ src/vtegtk.cc | 14 ++++++--------
+ 1 file changed, 6 insertions(+), 8 deletions(-)
+
+commit dc8c4ee2b4d1b704f7d5e0b002d4b62f4918a39f
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Tue Jan 30 20:07:02 2024 -0800
+
+    Revert "fonts: use CAIRO_HINT_STYLE_NONE on GTK 4"
+    
+    This reverts commit 74fe87b68da9e0a1d3cf26ebf079f4bb366e7c24.
+    
+    This causes some issues with rendering so we're going to have to
+    find another way to deal with fractional scaling.
+
+ src/fonts-pangocairo.cc | 2 --
+ 1 file changed, 2 deletions(-)
+
+commit 5f82f91b941b7c1f27c837d26441a4d5f16d619f
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Mon Jan 29 22:38:47 2024 +0100
+
+    widget: Update function docs
+    
+    ... to mention that the default font options include
+    %CAIRO_HINT_STYLE_NONE on GTK 4.
+
+ src/vtegtk.cc | 14 ++++++++------
+ 1 file changed, 8 insertions(+), 6 deletions(-)
+
+commit 76330dd70731ee0a0ecf9e3c267d7d7e6418736d
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Jan 29 22:38:47 2024 +0100
+
+    emulation: Remove xterm alias for DSR_DEC 53
+    
+    ... since xterm removed theirs in version 389.
+
+ src/vteseq.cc | 3 ---
+ 1 file changed, 3 deletions(-)
+
+commit 74fe87b68da9e0a1d3cf26ebf079f4bb366e7c24
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Mon Jan 29 10:53:22 2024 -0800
+
+    fonts: use CAIRO_HINT_STYLE_NONE on GTK 4
+    
+    This fixes an issue when fractional scaling is used that a portion of a
+    hinted glyph could fall outside the ink rect due to pixel grid shifting.
+    This is more apparent with the Vulkan/NGL GPU renderers in GTK now that
+    they are aware of the fractional scaling API of Wayland. Without this
+    you risk a small amount of unintended clipping. See GNOME/gtk#6367.
+    
+    See the following link for additional details. However, in the case here
+    with fractional scaling, disabling hint-metrics is not an option because
+    it will result in the same output as hint-metrics: on with
+    hint-style: slight.
+    
+    https://gitlab.gnome.org/GNOME/gtk/-/merge_requests/6823#note_1989289
+    
+    Fixes #2736
+
+ src/fonts-pangocairo.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 90543ab2a3de9635993950d8afb231fcb11bb915
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Jan 28 20:40:30 2024 +0100
+
+    widget: Add terminal properties
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2125
+
+ src/app/app.cc        |   57 ++
+ src/color-parser.hh   |   14 +
+ src/fwd.hh            |    7 +
+ src/marshal.list      |    1 +
+ src/meson.build       |   19 +-
+ src/parser-osc.hh     |    1 +
+ src/parser.hh         |   12 +
+ src/termprops-test.cc |  336 +++++++++++
+ src/termprops.hh      |  439 ++++++++++++++
+ src/vte.cc            |   22 +-
+ src/vte/vteenums.h    |   47 +-
+ src/vte/vteglobals.h  |   34 ++
+ src/vte/vteterminal.h |  127 +++-
+ src/vtedefines.hh     |    2 +
+ src/vtegtk.cc         | 1608 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ src/vtegtk.hh         |    2 +
+ src/vteinternal.hh    |   52 +-
+ src/vteseq.cc         |  107 ++++
+ src/widget.cc         |   13 +
+ src/widget.hh         |   32 +
+ 20 files changed, 2923 insertions(+), 9 deletions(-)
+
+commit b8f31a0459d45f03183af067cb0fc7847b2a8b84
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Jan 28 20:40:30 2024 +0100
+
+    lib: Add some colour helper classes
+
+ src/color-names-tests.hh |  853 +++++++++++++++++++++++++++
+ src/color-names.hh       | 1443 ++++++++++++++++++++++++++++++++++++++++++++++
+ src/color-parser.cc      |  477 +++++++++++++++
+ src/color-parser.hh      |   54 ++
+ src/color-test.cc        |  217 +++++++
+ src/color.hh             |  181 ++++++
+ src/meson.build          |   21 +
+ 7 files changed, 3246 insertions(+)
+
+commit 68d4539c6ebe9547abb19385bd6e8bfbca843f6e
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sun Jan 28 20:40:30 2024 +0100
+
+    lib: Add a simple UUID class
+    
+    Imported from https://bugzilla.gnome.org/show_bug.cgi?id=639078
+
+ src/cxx-utils.hh       |  29 +++++
+ src/fwd.hh             |   2 +
+ src/glib-glue.hh       |   1 +
+ src/meson.build        |  25 +++-
+ src/uuid-test.cc       | 166 ++++++++++++++++++++++++
+ src/uuid.cc            | 214 +++++++++++++++++++++++++++++++
+ src/uuid.hh            | 211 ++++++++++++++++++++++++++++++
+ src/vte-glue.hh        |   1 +
+ src/vte/meson.build    |   1 +
+ src/vte/vte.h          |   1 +
+ src/vte/vteenums.h     |  18 +++
+ src/vte/vteuuid.h      |  77 +++++++++++
+ src/vteuuid.cc         | 339 +++++++++++++++++++++++++++++++++++++++++++++++++
+ src/vteuuidinternal.hh |  30 +++++
+ 14 files changed, 1114 insertions(+), 1 deletion(-)
+
+commit 76f16adfa2ab731cc8f8042a487a6b61263d0404
+Author: Zander Brown <zbrown@gnome.org>
+Date:   Sat Jan 27 20:04:02 2024 +0000
+
+    widget: Don't throw warnings for our own header
+    
+    Fix: https://gitlab.gnome.org/GNOME/vte/-/issues/2731
+
+ src/vte/vtedeprecated.h | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+commit 5388832e54d85a91dffcc436dfdf386bac6b839d
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Fri Jan 26 09:44:54 2024 -0800
+
+    gsk: fix rectangle drawing using border nodes
+    
+    in GSK, border nodes draw _inside_ the bounding box. So we don't need to
+    do the same sort of Cairo'ism for half-line boundaries.
+    
+    This fixes that which also happens to fix the non-focused window cursor
+    rendering too thick with the newer GTK NGL renderer that landed on main.
+    
+    Fixes #2730
+
+ src/drawing-gsk.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit ca4fb88362aa0a295928b7d46ec5aaca7092268c
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Mon Jan 22 22:41:45 2024 +0100
+
+    widget: Fix context menu event check
+    
+    Prevent the context menu being shown erroneously.
+    
+    https://gitlab.gnome.org/GNOME/vte/-/issues/2728
+
+ src/vte.cc | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit bfd656e49e9151207d7291d60dfefacff52e73f0
+Author: Christian Hergert <chergert@redhat.com>
+Date:   Fri Jan 19 10:45:36 2024 -0800
+
+    widget: notify of style change upon css_changed
+    
+    The org.gnome.desktop.interface text-scaling-factor setting used by
+    the "Large Text" option in control-center applies to the gtk-xft-dpi which
+    in turn effects the CSS machinery.
+    
+    We must notify of a style change so that the PangoContext used by our
+    PangoLayout to measure and cache PangoFont will take the new scaling
+    factor into account.
+    
+    This makes GTK 4 act the same as GTK 3 did (and still does) when the
+    setting changes.
+
+ src/widget.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 9d2167b977133080cacc1c3ed029ad1962a2ceb5
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Jan 6 20:18:09 2024 +0100
+
+    docs: Install lz4-devel
+
+ .gitlab-ci.yml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 9eb4c6e63a285ffdbabdf02b4426b859cf52e707
+Author: Christian Persch <chpe@src.gnome.org>
+Date:   Sat Jan 6 19:47:24 2024 +0100
+
+    build: Post release version bump
+
+ meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit de5df02c42eb5de98f92f5cb4520fc963a54ab51 (tag: 0.75.0)
 Author: Christian Persch <chpe@src.gnome.org>
 Date:   Sun Dec 31 14:25:16 2023 +0100
 

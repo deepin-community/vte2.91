@@ -1,5 +1,5 @@
 /*
- * Copyright © 2019 Christian Persch
+ * Copyright © 2024 Christian Hergert
  *
  * This library is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published
@@ -15,33 +15,17 @@
  * along with this library.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#pragma once
+#include <gtk/gtk.h>
 
-namespace vte {
+G_BEGIN_DECLS
 
-namespace base {
+typedef void (*VteSchedulerCallback) (GtkWidget *widget,
+                                      gpointer   user_data);
 
-class Pty;
+gpointer _vte_scheduler_add_callback    (GtkWidget            *widget,
+                                         VteSchedulerCallback  callback,
+                                         gpointer              user_data);
+void     _vte_scheduler_remove_callback (GtkWidget            *widget,
+                                         gpointer              handler);
 
-} // namespace base
-
-namespace platform {
-
-class Clipboard;
-class EventBase;
-class KeyEvent;
-class MouseEvent;
-class ScrollEvent;
-class Widget;
-
-} // namespace platform
-
-namespace view {
-
-class FontInfo;
-class DrawingContext;
-struct Rectangle;
-
-} // namespace view
-
-} // namespace vte
+G_END_DECLS

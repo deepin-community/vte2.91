@@ -17,7 +17,7 @@
 project(
   'vte',
   ['c', 'cpp'],
-  version: '0.75.0',
+  version: '0.75.92',
   license: ['LGPL-3.0-or-later', 'GPL-3.0-or-later'],
   default_options: [
     'buildtype=release',
@@ -48,10 +48,10 @@ gtk4_max_allowed_version  = '4.12'
 cairo_req_version         = '1.0'
 cairo_gobject_req_version = '1.0'
 fribidi_req_version       = '1.0.0'
-gio_req_version           = '2.52.0'
-glib_req_version          = '2.52.0'
-glib_min_req_version      = '2.52'
-glib_max_allowed_version  = '2.60'
+gio_req_version           = '2.72.0'
+glib_req_version          = '2.72.0'
+glib_min_req_version      = '2.72'
+glib_max_allowed_version  = '2.72'
 gnutls_req_version        = '3.2.7'
 icu_uc_req_version        = '4.8'
 pango_req_version         = '1.22.0'
@@ -109,7 +109,7 @@ vte_systemduserunitdir = vte_prefix / 'lib' / 'systemd' / 'user'
 
 # Debug
 
-enable_debug = get_option('debugg') or get_option('debug') or get_option('buildtype').contains('debug')
+enable_debug = get_option('dbg') or get_option('debug') or get_option('buildtype').contains('debug')
 
 # Meson modules
 
@@ -189,7 +189,6 @@ config_h.set10('WITH_A11Y', get_option('a11y'))
 config_h.set10('WITH_FRIBIDI', get_option('fribidi'))
 config_h.set10('WITH_GNUTLS', get_option('gnutls'))
 config_h.set10('WITH_ICU', get_option('icu'))
-config_h.set10('WITH_SIXEL', get_option('sixel'))
 
 ver = glib_min_req_version.split('.')
 config_h.set('GLIB_VERSION_MIN_REQUIRED', '(G_ENCODE_VERSION(' + ver[0] + ',' + ver[1] + '))')
@@ -721,7 +720,6 @@ output += '  GTK+ 4.0:     ' + get_option('gtk4').to_string() + '\n'
 output += '  ICU:          ' + get_option('icu').to_string() + '\n'
 output += '  GIR:          ' + get_option('gir').to_string() + '\n'
 output += '  systemd:      ' + systemd_dep.found().to_string() + '\n'
-output += '  SIXEL:        ' + get_option('sixel').to_string() + '\n'
 output += '  Glade:        ' + get_option('glade').to_string() + '\n'
 output += '  Vala:         ' + get_option('vapi').to_string() + '\n'
 output += '\n'

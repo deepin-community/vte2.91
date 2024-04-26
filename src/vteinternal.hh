@@ -86,10 +86,6 @@
 #include "icu-converter.hh"
 #endif
 
-#if WITH_SIXEL
-#include "sixel-context.hh"
-#endif
-
 enum {
         VTE_BIDI_FLAG_IMPLICIT   = 1 << 0,
         VTE_BIDI_FLAG_RTL        = 1 << 1,
@@ -262,8 +258,7 @@ private:
         enum class Alignment : uint8_t {
                 START  = 0u,
                 CENTRE = 1u,
-                /* BASELINE = 2u, */
-                END    = 3u,
+                END    = 2u,
         };
 
 protected:
@@ -366,9 +361,6 @@ public:
                 /* ECMA48_ECMA35, not supported */
 
                 /* The following can never be primary data syntax: */
-#if WITH_SIXEL
-                DECSIXEL,
-#endif
         };
 
         DataSyntax m_primary_data_syntax{DataSyntax::ECMA48_UTF8};
@@ -426,10 +418,6 @@ public:
                 }
         }
 
-#if WITH_SIXEL
-        std::unique_ptr<vte::sixel::Context> m_sixel_context{};
-#endif
-
 	/* Screen data.  We support the normal screen, and an alternate
 	 * screen, which seems to be a DEC-specific feature. */
         VteScreen m_normal_screen;
@@ -480,7 +468,7 @@ public:
 
 	/* Scrolling options. */
         bool m_fallback_scrolling{true};
-        bool m_scroll_on_insert{true};
+        bool m_scroll_on_insert{false};
         bool m_scroll_on_output{false};
         bool m_scroll_on_keystroke{true};
         vte::grid::row_t m_scrollback_lines{0};
@@ -554,21 +542,6 @@ public:
         vte::glib::Timer m_mouse_autoscroll_timer{std::bind(&Terminal::mouse_autoscroll_timer_callback,
                                                             this),
                                                   "mouse-autoscroll-timer"};
-
-        /* Inline images */
-        bool m_sixel_enabled{VTE_SIXEL_ENABLED_DEFAULT};
-        bool m_images_enabled{VTE_SIXEL_ENABLED_DEFAULT};
-
-        bool set_sixel_enabled(bool enabled) noexcept
-        {
-                auto const changed = m_sixel_enabled != enabled;
-                m_sixel_enabled = m_images_enabled = enabled;
-                if (changed)
-                        invalidate_all();
-                return changed;
-        }
-
-        constexpr bool sixel_enabled() const noexcept { return m_sixel_enabled; }
 
 	/* State variables for handling match checks. */
         int m_match_regex_next_tag{0};
@@ -809,7 +782,7 @@ public:
         bool m_enable_shaping{true};
 
         /* FrameClock driven updates */
-        guint m_tick_callback;
+        gpointer m_scheduler;
 
         /* BiDi parameters outside of ECMA and DEC private modes */
         guint m_bidi_rtl : 1;
@@ -922,13 +895,8 @@ public:
 
         void insert_char(gunichar c,
                          bool invalidate_now);
-        void insert_ascii_chars(uint8_t const *start,
-                                uint8_t const *end);
-
-        #if WITH_SIXEL
-        void insert_image(ProcessingContext& context,
-                          vte::Freeable<cairo_surface_t> image_surface) /* throws */;
-        #endif
+        void insert_single_width_chars(gunichar const *p,
+                                       int len);
 
         void invalidate_row(vte::grid::row_t row);
         void invalidate_rows(vte::grid::row_t row_start,
@@ -954,10 +922,6 @@ public:
         #if WITH_ICU
         void process_incoming_pcterm(ProcessingContext& context,
                                      vte::base::Chunk& chunk);
-        #endif
-        #if WITH_SIXEL
-        void process_incoming_decsixel(ProcessingContext& context,
-                                       vte::base::Chunk& chunk);
         #endif
         bool process();
         inline bool is_processing() const { return m_is_processing; };
@@ -1157,7 +1121,6 @@ public:
         void im_reset();
         void im_update_cursor();
 
-        void reset_graphics_color_registers();
         void reset(bool clear_tabstops,
                    bool clear_history,
                    bool from_api = false);
@@ -1238,12 +1201,28 @@ public:
         void resolve_selection();
         void selection_maybe_swap_endpoints(vte::view::coords const& pos);
         void modify_selection(vte::view::coords const& pos);
-        bool cell_is_selected_log(vte::grid::column_t lcol,
-                                  vte::grid::row_t) const;
+        bool _cell_is_selected_log(vte::grid::column_t lcol,
+                                   vte::grid::row_t) const;
         bool cell_is_selected_vis(vte::grid::column_t vcol,
                                   vte::grid::row_t) const;
 
-        void reset_default_attributes(bool reset_hyperlink);
+        inline bool cell_is_selected_log(vte::grid::column_t lcol,
+                                         vte::grid::row_t row) const {
+                // Callers need to update the ringview. However, don't assert, just
+                // return out-of-view coords. FIXME: may want to throw instead
+                if (!m_ringview.is_updated())
+                        [[unlikely]] return false;
+
+                // In normal modes, resolve_selection() made sure to generate
+                // such boundaries for m_selection_resolved.
+                if (!m_selection_block_mode)
+                        [[likely]] return m_selection_resolved.contains ({row, lcol});
+
+                return _cell_is_selected_log(lcol, row);
+        }
+
+
+        void reset_default_attributes(bool reset_osc);
 
         void ensure_font();
         void update_font();
@@ -1281,8 +1260,10 @@ public:
 
         void scroll_lines(long lines);
         void scroll_pages(long pages) { scroll_lines(pages * m_row_count); }
-        void maybe_scroll_to_top();
-        void maybe_scroll_to_bottom();
+        void scroll_to_top();
+        void scroll_to_bottom();
+        void scroll_to_previous_prompt();
+        void scroll_to_next_prompt();
 
         void queue_cursor_moved();
         void queue_contents_changed();
@@ -1602,8 +1583,6 @@ public:
                                        vte::grid::column_t column); /* 1-based */
         inline void erase_characters(long count,
                                      bool use_basic = false);
-        void erase_image_rect(vte::grid::row_t rows,
-                              vte::grid::column_t columns);
 
         template<unsigned int redbits, unsigned int greenbits, unsigned int bluebits>
         inline bool seq_parse_sgr_color(vte::parser::Sequence const& seq,
@@ -1698,6 +1677,9 @@ public:
         void set_current_hyperlink(vte::parser::Sequence const& seq,
                                    vte::parser::StringTokeniser::const_iterator& token,
                                    vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept;
+        void set_current_shell_integration_mode(vte::parser::Sequence const& seq,
+                                                vte::parser::StringTokeniser::const_iterator& token,
+                                                vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept;
 
         void ringview_update();
 

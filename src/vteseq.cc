@@ -69,6 +69,11 @@ enum {
         VTE_SGR_COLOR_SPEC_LEGACY = 5
 };
 
+inline consteval int firmware_version() noexcept
+{
+        return (VTE_MAJOR_VERSION * 100 + VTE_MINOR_VERSION) * 100 + VTE_MICRO_VERSION;
+}
+
 void
 vte::parser::Sequence::print() const noexcept
 {
@@ -890,34 +895,6 @@ Terminal::erase_characters(long count,
         m_text_deleted_flag = TRUE;
 }
 
-void
-Terminal::erase_image_rect(vte::grid::row_t rows,
-                           vte::grid::column_t columns)
-{
-        auto const top = m_screen->cursor.row;
-
-        /* FIXMEchpe: simplify! */
-        for (auto i = 0; i < rows; ++i) {
-                auto const row = top + i;
-
-                erase_characters(columns, true);
-
-                if (row > m_screen->insert_delta - 1 &&
-                    row < m_screen->insert_delta + m_row_count)
-                        set_hard_wrapped(row);
-
-                if (i == rows - 1) {
-                        if (m_modes_private.MINTTY_SIXEL_SCROLL_CURSOR_RIGHT())
-                                move_cursor_forward(columns);
-                        else
-                                cursor_down_with_scrolling(true);
-                } else {
-                        cursor_down_with_scrolling(true);
-                }
-        }
-        m_screen->cursor_advanced_by_graphic_character = false;
-}
-
 /* Terminal::move_cursor_up:
  * Cursor up by n rows (respecting the DECSTBM / DECSLRM scrolling region).
  *
@@ -1563,6 +1540,37 @@ Terminal::set_current_hyperlink(vte::parser::Sequence const& seq,
         }
 
         m_defaults.attr.hyperlink_idx = idx;
+}
+
+void
+Terminal::set_current_shell_integration_mode(vte::parser::Sequence const& seq,
+                                             vte::parser::StringTokeniser::const_iterator& token,
+                                             vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept
+{
+        if (token != endtoken && token.size_remaining() > 0) {
+                std::string mode = *token;
+                if (mode == "A") {
+                        m_defaults.attr.set_shellintegration(ShellIntegrationMode::ePROMPT);
+                } else if (mode == "B") {
+                        m_defaults.attr.set_shellintegration(ShellIntegrationMode::eCOMMAND);
+                } else if (mode == "C") {
+                        m_defaults.attr.set_shellintegration(ShellIntegrationMode::eNORMAL);
+                } else if (mode == "D") {
+                        /* This deliberately doesn't start a different mode. Ignore for now. */
+                } else if (mode == "L") {
+                        /* Maybe insert some CR LFs, with the purpose of making sure that the
+                         * shell prompt starts on its own paragraph (i.e. just after a hard wrap).
+                         * See https://gitlab.gnome.org/GNOME/vte/-/issues/2681#note_1911689.
+                         *
+                         * (This doesn't start a new mode, so the method name is not quite accurate. Nevermind.) */
+                        while (m_screen->cursor.col > 0 ||
+                               m_screen->row_data->is_soft_wrapped(m_screen->cursor.row - 1)) {
+                                set_cursor_column(0);
+                                cursor_down_with_scrolling(true);
+                        }
+                        maybe_apply_bidi_attributes(VTE_BIDI_FLAG_ALL);
+                }
+        }
 }
 
 /*
@@ -2295,12 +2303,18 @@ Terminal::DA1(vte::parser::Sequence const& seq)
         if (seq.collect1(0, 0) != 0)
                 return;
 
-        reply(seq, VTE_REPLY_DECDA1R, {65, 1,
-#if WITH_SIXEL
-                                       m_sixel_enabled ? 4 : -2 /* skip */,
-#endif
-                                       9,
-                                       21});
+        // When testing, use level 5 (VT525); otherwise be more honest and
+        // use level 1 (VT100-ish) since we don't implement some/many of the
+        // things the higher level mandates.
+        // See https://gitlab.gnome.org/GNOME/vte/-/issues/2724
+        auto const level = g_test_flags ? 65 : 61;
+
+        reply(seq, VTE_REPLY_DECDA1R,
+              {level,
+               1, // 132-column mode
+               21, // horizontal scrolling
+               22 // colour text
+              });
 }
 
 void
@@ -2313,24 +2327,31 @@ Terminal::DA2(vte::parser::Sequence const& seq)
          * informational-only and should not be used by the host to detect
          * terminal features.
          *
-         * Reply: DECDA2R (CSI > 65 ; FIRMWARE ; KEYBOARD c)
+         * Reply: DECDA2R (CSI > 65 ; FIRMWARE ; KEYBOARD [; OPTION…]* c)
          * where 65 is fixed for VT525 color terminals, the last terminal-line that
          * increased this number (64 for VT520). FIRMWARE is the firmware
          * version encoded as major/minor (20 == 2.0) and KEYBOARD is 0 for STD
-         * keyboard and 1 for PC keyboards.
+         * keyboard and 1 for PC keyboards. None or more OPTION values may
+         * be present, indicating which options are installed in the device.
          *
          * We replace the firmware-version with the VTE version so clients
          * can decode it again.
          *
          * References: VT525
+         *             DECSTD 070 p4–24
          */
 
         /* Param != 0 means this is a reply, not a request */
         if (seq.collect1(0, 0) != 0)
                 return;
 
-        int const version = (VTE_MAJOR_VERSION * 100 + VTE_MINOR_VERSION) * 100 + VTE_MICRO_VERSION;
-        reply(seq, VTE_REPLY_DECDA2R, {65, version, 1});
+        // When testing, use level 5 (VT525); otherwise be more honest and
+        // use level 1 (VT100-ish) since we don't implement some/many of the
+        // things the higher level mandates.
+        // See https://gitlab.gnome.org/GNOME/vte/-/issues/2724
+        auto const level = g_test_flags ? 65 : 61;
+
+        reply(seq, VTE_REPLY_DECDA2R, {level, firmware_version(), 1});
 }
 
 void
@@ -3660,12 +3681,14 @@ Terminal::DECRQPSR(vte::parser::Sequence const& seq)
          * be restored with DECRSPS.
          *
          * References: VT525
+         *             DEC STD 070 p5–197ff
          */
 
         switch (seq.collect1(0)) {
         case -1:
         case 0:
-                /* Error; ignore request */
+        default:
+                /* Ignore request and send no report */
                 break;
 
         case 1:
@@ -3676,19 +3699,24 @@ Terminal::DECRQPSR(vte::parser::Sequence const& seq)
                  *   - the character sets designated to the G0, G1, G2, and G3 sets.
                  *
                  * Reply: DECCIR
-                 *   DATA: the report in a unspecified format
-                 *         See WY370 for a possible format to use.
+                 *   DATA: report in the format specified in DEC STD 070 p5–200ff
                  */
+                // For now, send an error report
+                reply(seq, VTE_REPLY_DECPSR, {0});
                 break;
 
         case 2:
-                /* Tabstop report.
+                /* Cursor information report. This contains:
+                 *   - the cursor position, including character attributes and
+                 *     character protection attribute,
+                 *   - origin mode (DECOM),
+                 *   - the character sets designated to the G0, G1, G2, and G3 sets.
                  *
                  * Reply: DECTABSR
+                 *   DATA: report in the format specified in DEC STD 070 p5–204
                  */
-                break;
-
-        default:
+                // For now, send an error report
+                reply(seq, VTE_REPLY_DECPSR, {0});
                 break;
         }
 }
@@ -3775,6 +3803,7 @@ Terminal::DECRQSS(vte::parser::Sequence const& seq)
         case VTE_CMD_DECSDPT:
         case VTE_CMD_DECSEST:
         case VTE_CMD_DECSFC:
+        case VTE_CMD_DECSGR:
         case VTE_CMD_DECSKCV:
         case VTE_CMD_DECSLCK:
         case VTE_CMD_DECSLPP:
@@ -3793,6 +3822,7 @@ Terminal::DECRQSS(vte::parser::Sequence const& seq)
         case VTE_CMD_DECSZS:
         case VTE_CMD_DECTME:
         case VTE_CMD_SGR:
+        case VTE_CMD_XTERM_MODKEYS:
         default:
                 return reply(seq, VTE_REPLY_DECRPSS, {0});
         }
@@ -3807,25 +3837,27 @@ Terminal::DECRQTSR(vte::parser::Sequence const& seq)
          * be restored by DECRSTS.
          *
          * References: VT525
+         *             DEC STD 070 p5–206ff
          */
 
         switch (seq.collect1(0)) {
         case -1:
         case 0:
-                /* Ignore */
+        default:
+                /* Ignore, send no report*/
                 break;
 
         case 1:
-                /* Terminal state report.
+                /* DECTSR – Terminal state request
                  *
                  * Reply: DECTSR
-                 *   DATA: the report in an unspecified format
+                 *   DATA: report in an unspecified format
                  */
-                /* return reply(seq, VTE_REPLY_DECTSR, {1}, "FIXME"); */
-                break;
+                // For now, send an error report
+                return reply(seq, VTE_REPLY_DECTSR, {0});
 
         case 2:
-                /* Color table report.
+                /* DECCTR – Color table request
                  *
                  * Arguments:
                  *   args[1]: color coordinate system
@@ -3833,14 +3865,11 @@ Terminal::DECRQTSR(vte::parser::Sequence const& seq)
                  *     1: HLS (0…360, 0…100, 0…100)
                  *     2: RGB (0…100, 0…100, 0…100) (yes, really!)
                  *
-                 * Reply: DECTSR
-                 *   DATA: the report
+                 * Reply: DECCTR
+                 *   DATA: report in an unspecified format
                  */
-                /* return reply(seq, VTE_REPLY_DECTSR, {2}, "FIXME"); */
-                break;
-
-        default:
-                break;
+                // For now, send an error report
+                return reply(seq, VTE_REPLY_DECTSR, {0});
         }
 }
 
@@ -3869,11 +3898,13 @@ Terminal::DECRSPS(vte::parser::Sequence const& seq)
          * Restores terminal state from a DECRQPSR response.
          *
          * References: VT525
+         *             DEC STD 070 p5–197ff
          */
 
         switch (seq.collect1(0)) {
         case -1:
         case 0:
+        default:
                 /* Error; ignore */
                 break;
 
@@ -3883,9 +3914,6 @@ Terminal::DECRSPS(vte::parser::Sequence const& seq)
 
         case 2:
                 /* Tabstop report */
-                break;
-
-        default:
                 break;
         }
 }
@@ -3898,6 +3926,7 @@ Terminal::DECRSTS(vte::parser::Sequence const& seq)
          * Restore terminal state from a DECRQTSR response.
          *
          * References: VT525
+         *             DEC STD 070 p5–206ff
          */
 
         switch (seq.collect1(0)) {
@@ -4084,8 +4113,6 @@ Terminal::DECSCL(vte::parser::Sequence const& seq)
                 break;
         }
 #endif
-
-        reset_graphics_color_registers();
 }
 
 void
@@ -4330,7 +4357,7 @@ Terminal::DECSGR(vte::parser::Sequence const& seq)
         /* TODO: consider implementing sub/superscript? */
 }
 
-bool
+void
 Terminal::DECSIXEL(vte::parser::Sequence const& seq)
 {
         /*
@@ -4358,116 +4385,6 @@ Terminal::DECSIXEL(vte::parser::Sequence const& seq)
          * References: VT330
          *             DEC PPLV2 § 5.4
          */
-
-#if WITH_SIXEL
-        auto process_sixel = false;
-        auto mode = vte::sixel::Parser::Mode{};
-        if (m_sixel_enabled) {
-                switch (primary_data_syntax()) {
-                case DataSyntax::ECMA48_UTF8:
-                        process_sixel = true;
-                        mode = vte::sixel::Parser::Mode::UTF8;
-                        break;
-
-#if WITH_ICU
-                case DataSyntax::ECMA48_PCTERM:
-                        /* It's not really clear how DECSIXEL should be processed in PCTERM mode.
-                         * The DEC documentation available isn't very detailed on PCTERM mode,
-                         * and doesn't appear to mention its interaction with DECSIXEL at all.
-                         *
-                         * Since (afaik) a "real" DEC PCTERM mode only (?) translates the graphic
-                         * characters, not the whole data stream, as we do, let's assume that
-                         * DECSIXEL content should be processed as raw bytes, i.e. without any
-                         * translation.
-                         * Also, since C1 controls don't exist in PCTERM mode, let's process
-                         * DECSIXEL in 7-bit mode.
-                         *
-                         * As an added complication, we can only switch data syntaxes if
-                         * the data stream is exact, that is the charset converter has
-                         * not consumed more data than we have currently read output bytes
-                         * from it. So we need to check that the converter has no pending
-                         * characters.
-                         *
-                         * Alternatively, we could just refuse to process DECSIXEL in
-                         * PCTERM mode.
-                         */
-                        process_sixel = !m_converter->decoder().pending();
-                        mode = vte::sixel::Parser::Mode::SEVENBIT;
-                        break;
-#endif /* WITH_ICU */
-
-                default:
-                        __builtin_unreachable();
-                        process_sixel = false;
-                }
-        }
-
-        /* How to interpret args[1] is not entirely clear from the DEC
-         * documentation and other terminal emulators.
-         * We choose to make args[1]==1 mean to use transparent background.
-         * and treat all other values (default, 0, 2) as using the current
-         * SGR background colour. See the discussion in issue #253.
-         *
-         * Also use the current SGR foreground colour to initialise
-         * the special colour register so that SIXEL images which set
-         * no colours get a sensible default.
-         */
-        auto transparent_bg = bool{};
-        switch (seq.collect1(1, 2)) {
-        case -1: /* default */
-        case 0:
-        case 2:
-                transparent_bg = false;
-                break;
-
-        case 1:
-                transparent_bg = true;
-                break;
-
-        case 5: /* OR mode (a nonstandard NetBSD/x68k extension; not supported */
-                process_sixel = false;
-                break;
-
-        default:
-                transparent_bg = false;
-                break;
-        }
-
-        /* Ignore the whole sequence */
-        if (!process_sixel || seq.is_ripe() /* that shouldn't happen */) {
-                m_parser.ignore_until_st();
-                return false;
-        }
-
-        auto fore = unsigned{}, back = unsigned{};
-        auto fg = vte::color::rgb{}, bg = vte::color::rgb{};
-        resolve_normal_colors(&m_defaults, &fore, &back, fg, bg);
-
-        try {
-                if (!m_sixel_context)
-                        m_sixel_context = std::make_unique<vte::sixel::Context>();
-
-                m_sixel_context->prepare(seq.introducer(),
-                                         fg.red >> 8, fg.green >> 8, fg.blue >> 8,
-                                         bg.red >> 8, bg.green >> 8, bg.blue >> 8,
-                                         back == VTE_DEFAULT_BG || transparent_bg,
-                                         m_modes_private.XTERM_SIXEL_PRIVATE_COLOR_REGISTERS());
-
-                m_sixel_context->set_mode(mode);
-
-                /* We need to reset the main parser, so that when it is in the ground state
-                 * when processing returns to the primary data syntax from DECSIXEL
-                 */
-                m_parser.reset();
-                push_data_syntax(DataSyntax::DECSIXEL);
-
-                return true; /* switching data syntax */
-        } catch (...) {
-        }
-#endif /* WITH_SIXEL */
-
-        m_parser.ignore_until_st();
-        return false;
 }
 
 void
@@ -5384,9 +5301,6 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                 reply(seq, VTE_REPLY_DECDSR, {27, 0, 0, 5});
                 break;
 
-        case 53:
-                /* XTERM alias for 55 */
-                [[fallthrough]];
         case 55:
                 /* Request locator status report
                  * Reply: DECDSR
@@ -6615,6 +6529,10 @@ Terminal::OSC(vte::parser::Sequence const& seq)
                 set_current_hyperlink(seq, it, cend);
                 break;
 
+        case VTE_OSC_ITERM2_SHELL_INTEGRATION:
+                set_current_shell_integration_mode(seq, it, cend);
+                break;
+
         case -1: /* default */
         case VTE_OSC_XTERM_SET_WINDOW_AND_ICON_TITLE:
         case VTE_OSC_XTERM_SET_WINDOW_TITLE: {
@@ -6696,7 +6614,6 @@ Terminal::OSC(vte::parser::Sequence const& seq)
         case VTE_OSC_XTERM_RESET_COLOR_TEK_BG:
         case VTE_OSC_XTERM_RESET_COLOR_TEK_CURSOR:
         case VTE_OSC_EMACS_51:
-        case VTE_OSC_ITERM2_133:
         case VTE_OSC_ITERM2_1337:
         case VTE_OSC_ITERM2_GROWL:
         case VTE_OSC_KONSOLE_30:
@@ -7362,7 +7279,7 @@ Terminal::SGR(vte::parser::Sequence const& seq)
                         auto v = 1;
                         // If we have a subparameter, get it
                         if (seq.param_nonfinal(i)) {
-                                v = seq.param_range(i + 1, 1, 0, 3, -2);
+                                v = seq.param_range(i + 1, 1, 0, 5, -2);
                                 // Skip the subparam sequence if the subparam
                                 // is outside the supported range. See issue
                                 // https://gitlab.gnome.org/GNOME/vte/-/issues/2640
@@ -8926,84 +8843,7 @@ Terminal::XTERM_SMGRAPHICS(vte::parser::Sequence const& seq)
          */
 
         auto const attr = seq.collect1(0);
-        auto status = 3, rv0 = -2, rv1 = -2;
-
-        switch (attr) {
-#if WITH_SIXEL
-        case 0: /* Colour registers.
-                 *
-                 * VTE doesn't support changing the number of colour registers, so always
-                 * return the fixed number, and set() returns success iff the passed number
-                 * was less or equal that number.
-                 */
-                switch (seq.collect1(1)) {
-                case 1: /* read */
-                case 2: /* reset */
-                case 4: /* read maximum */
-                        status = 0;
-                        rv0 = VTE_SIXEL_NUM_COLOR_REGISTERS;
-                        break;
-                case 3: /* set */
-                        status = (seq.collect1(2) <= VTE_SIXEL_NUM_COLOR_REGISTERS) ? 0 : 2;
-                        rv0 = VTE_SIXEL_NUM_COLOR_REGISTERS;
-                        break;
-                case -1: /* no default */
-                default:
-                        status = 2;
-                        break;
-                }
-                break;
-
-        case 1: /* SIXEL graphics geometry.
-                 *
-                 * VTE doesn't support variable geometries; always report
-                 * the maximum size of a SIXEL graphic, and set() returns success iff the
-                 * passed numbers are less or equal to that number.
-                 */
-                switch (seq.collect1(1)) {
-                case 1: /* read */
-                case 2: /* reset */
-                case 4: /* read maximum */
-                        status = 0;
-                        rv0 = VTE_SIXEL_MAX_WIDTH;
-                        rv1 = VTE_SIXEL_MAX_HEIGHT;
-                        break;
-
-                case 3: /* set */ {
-                        auto w = int{}, h = int{};
-                        if (seq.collect(2, {&w, &h}) &&
-                            w > 0 &&  w <= VTE_SIXEL_MAX_WIDTH &&
-                            h > 0 && h <= VTE_SIXEL_MAX_HEIGHT) {
-                                rv0 = VTE_SIXEL_MAX_WIDTH;
-                                rv1 = VTE_SIXEL_MAX_HEIGHT;
-                                status = 0;
-                        } else {
-                                status = 3;
-                        }
-
-                        break;
-                }
-
-                case -1: /* no default */
-                default:
-                        status = 2;
-                        break;
-                }
-                break;
-
-#endif /* WITH_SIXEL */
-
-#if 0 /* ifdef WITH_REGIS */
-        case 2:
-                status = 1;
-                break;
-#endif
-
-        case -1: /* no default value */
-        default:
-                status = 1;
-                break;
-        }
+        auto status = 1, rv0 = -2, rv1 = -2;
 
         reply(seq, VTE_REPLY_XTERM_SMGRAPHICS_REPORT, {attr, status, rv0, rv1});
 }
@@ -9054,6 +8894,30 @@ Terminal::XTERM_STCAP(vte::parser::Sequence const& seq)
          *
          * Probably not worth implementing.
          */
+}
+
+void
+Terminal::XTERM_VERSION(vte::parser::Sequence const& seq)
+{
+        /*
+         * XTERM_VERSION - xterm request version report
+         *
+         * Returns the xterm name and version as XTERM_DSR.
+         *
+         * Arguments:
+         *   args[0]: select function
+         *     0: report xterm name and version
+         *
+         * Defaults:
+         *   args[0]: 0 (as per xterm code, no default as per xterm docs)
+         *
+         * References: XTERM
+         */
+
+        if (seq.collect1(0, 0) != 0)
+                return;
+
+        reply(seq, VTE_REPLY_XTERM_DSR, {}, "VTE(%d)", firmware_version());
 }
 
 void

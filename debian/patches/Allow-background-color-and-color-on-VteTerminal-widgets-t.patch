@@ -13,7 +13,7 @@ Last-Update: 2021-11-08
  1 file changed, 22 insertions(+), 6 deletions(-)
 
 diff --git a/src/vtegtk.cc b/src/vtegtk.cc
-index 521f745..a86be3d 100644
+index 56468e2..0d9ae72 100644
 --- a/src/vtegtk.cc
 +++ b/src/vtegtk.cc
 @@ -92,6 +92,7 @@ template<typename T>
@@ -34,7 +34,7 @@ index 521f745..a86be3d 100644
          gtk_style_context_add_provider (context,
                                          VTE_TERMINAL_GET_CLASS (terminal)->priv->style_provider,
                                          VTE_TERMINAL_CSS_PRIORITY);
-@@ -2609,6 +2613,24 @@ vte_terminal_class_init(VteTerminalClass *klass)
+@@ -2605,6 +2609,24 @@ vte_terminal_class_init(VteTerminalClass *klass)
  
          klass->priv = G_TYPE_CLASS_GET_PRIVATE (klass, VTE_TYPE_TERMINAL, VteTerminalClassPrivate);
  
@@ -59,7 +59,7 @@ index 521f745..a86be3d 100644
          klass->priv->style_provider = GTK_STYLE_PROVIDER (gtk_css_provider_new ());
  #if VTE_GTK == 3
          auto err = vte::glib::Error{};
-@@ -2619,12 +2641,6 @@ vte_terminal_class_init(VteTerminalClass *klass)
+@@ -2615,12 +2637,6 @@ vte_terminal_class_init(VteTerminalClass *klass)
          gtk_css_provider_load_from_data (GTK_CSS_PROVIDER (klass->priv->style_provider),
                                           "VteTerminal, " VTE_TERMINAL_CSS_NAME " {\n"
                                           "padding: 1px 1px 1px 1px;\n"

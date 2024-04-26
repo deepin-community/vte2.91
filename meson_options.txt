@@ -30,7 +30,7 @@ option(
 )
 
 option(
-  'debugg', # for some reason, 'debug' is "reserved"
+  'dbg', # for some reason, 'debug' is "reserved"
   type: 'boolean',
   value: false,
   description: 'Enable extra debugging functionality',
@@ -90,13 +90,6 @@ option(
   type: 'boolean',
   value: true,
   description: 'Enable legacy charset support using ICU',
-)
-
-option(
-  'sixel',
-  type: 'boolean',
-  value: false,
-  description: 'Enable SIXEL support',
 )
 
 option(
