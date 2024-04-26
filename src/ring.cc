@@ -25,20 +25,6 @@
 
 #include <string.h>
 
-#if WITH_SIXEL
-
-#include "cxx-utils.hh"
-
-/* We should be able to hold a single fullscreen 4K image at most.
- * 35MiB equals 3840 * 2160 * 4 plus a little extra. */
-#define IMAGE_FAST_MEMORY_USED_MAX (35 * 1024 * 1024)
-
-/* Hard limit on number of images to keep around. This limits the impact
- * of potential issues related to algorithmic complexity. */
-#define IMAGE_FAST_COUNT_MAX 4096
-
-#endif /* WITH_SIXEL */
-
 /*
  * Copy the common attributes from VteCellAttr to VteStreamCellAttr or vice versa.
  */
@@ -204,115 +190,6 @@ Ring::hyperlink_maybe_gc(row_t increment)
                 hyperlink_gc();
 }
 
-#if WITH_SIXEL
-
-void
-Ring::image_gc_region() noexcept
-{
-        cairo_region_t *region = cairo_region_create();
-
-        for (auto rit = m_image_map.rbegin();
-             rit != m_image_map.rend();
-             ) {
-                auto const& image = rit->second;
-                auto const rect = cairo_rectangle_int_t{image->get_left(),
-                                                        image->get_top(),
-                                                        image->get_width(),
-                                                        image->get_height()};
-
-                if (cairo_region_contains_rectangle(region, &rect) == CAIRO_REGION_OVERLAP_IN) {
-                        /* vte::image::Image has been completely overdrawn; delete it */
-
-                        m_image_fast_memory_used -= image->resource_size();
-
-                        /* Apparently this is the cleanest way to erase() with a reverse iterator... */
-                        /* Unlink the image from m_image_by_top_map, then erase it from m_image_map */
-                        unlink_image_from_top_map(image.get());
-                        rit = image_map_type::reverse_iterator{m_image_map.erase(std::next(rit).base())};
-                        continue;
-                }
-
-                cairo_region_union_rectangle(region, &rect);
-                ++rit;
-        }
-
-        cairo_region_destroy(region);
-}
-
-void
-Ring::image_gc() noexcept
-{
-        while (m_image_fast_memory_used > IMAGE_FAST_MEMORY_USED_MAX ||
-               m_image_map.size() > IMAGE_FAST_COUNT_MAX) {
-                if (m_image_map.empty()) {
-                        /* If this happens, we've miscounted somehow. */
-                        break;
-                }
-
-                auto& image = m_image_map.begin()->second;
-                m_image_fast_memory_used -= image->resource_size();
-                unlink_image_from_top_map(image.get());
-                m_image_map.erase(m_image_map.begin());
-        }
-}
-
-void
-Ring::unlink_image_from_top_map(vte::image::Image const* image) noexcept
-{
-        auto [begin, end] = m_image_by_top_map.equal_range(image->get_top());
-
-        for (auto it = begin; it != end; ++it) {
-                if (it->second != image)
-                        continue;
-
-                m_image_by_top_map.erase(it);
-                break;
-        }
-}
-
-void
-Ring::rebuild_image_top_map() /* throws */
-{
-        m_image_by_top_map.clear();
-
-        for (auto it = m_image_map.begin(), end = m_image_map.end();
-             it != end;
-             ++it) {
-                auto const& image = it->second;
-                m_image_by_top_map.emplace(std::piecewise_construct,
-                                           std::forward_as_tuple(image->get_top()),
-                                           std::forward_as_tuple(image.get()));
-        }
-}
-
-bool
-Ring::rewrap_images_in_range(Ring::image_by_top_map_type::iterator& it,
-                             size_t text_start_ofs,
-                             size_t text_end_ofs,
-                             row_t new_row_index) noexcept
-{
-        for (auto const end = m_image_by_top_map.end();
-             it != end;
-             ++it) {
-                auto const& image = it->second;
-                auto ofs = CellTextOffset{};
-
-                if (!frozen_row_column_to_text_offset(image->get_top(), 0, &ofs))
-                        return false;
-
-                if (ofs.text_offset >= text_end_ofs)
-                        break;
-
-                if (ofs.text_offset >= text_start_ofs && ofs.text_offset < text_end_ofs) {
-                        image->set_top(new_row_index);
-                }
-        }
-
-        return true;
-}
-
-#endif /* WITH_SIXEL */
-
 /*
  * Find existing idx for the hyperlink or allocate a new one.
  *
@@ -424,6 +301,7 @@ Ring::freeze_row(row_t position,
 	memset(&record, 0, sizeof(record));
 	record.text_start_offset = _vte_stream_head(m_text_stream);
 	record.attr_start_offset = _vte_stream_head(m_attr_stream);
+        record.width = row->len;
 	record.is_ascii = 1;
 
 	g_string_truncate (buffer, 0);
@@ -713,13 +591,6 @@ Ring::reset()
         m_start = m_writable = m_end;
         m_cached_row_num = (row_t)-1;
 
-#if WITH_SIXEL
-        m_image_by_top_map.clear();
-        m_image_map.clear();
-        m_next_image_priority = 0;
-        m_image_fast_memory_used = 0;
-#endif
-
         return m_end;
 }
 
@@ -757,6 +628,51 @@ Ring::is_soft_wrapped(row_t position)
         if (G_UNLIKELY (!read_row_record(&record, position)))
                 return false;
         return record.soft_wrapped;
+}
+
+/* Returns whether the given visual row contains the beginning of a prompt, i.e.
+ * contains a prompt character which is immediately preceded by either a hard newline
+ * or a non-prompt character (possibly at the end of previous, soft wrapped row).
+ *
+ * This way we catch soft wrapped multiline prompts at their first line only,
+ * and catch prompts that do not begin at the beginning of a row.
+ *
+ * FIXME extend support for deliberately multiline (hard wrapped) prompts:
+ * https://gitlab.gnome.org/GNOME/vte/-/issues/2681#note_1904004
+ *
+ * FIXME this is very slow, it unnecessarily reads text_stream
+ * in which we're not interested at all. Implement a faster algorithm. */
+bool
+Ring::contains_prompt_beginning(row_t position)
+{
+        const VteRowData *row = index(position);
+        if (row == NULL || row->len == 0) {
+                return false;
+        }
+
+        /* First check the places where the previous character is also readily available. */
+        int col = 0;
+        while (col < row->len && row->cells[col].attr.shellintegration() == ShellIntegrationMode::ePROMPT) {
+                col++;
+        }
+        while (col < row->len && row->cells[col].attr.shellintegration() != ShellIntegrationMode::ePROMPT) {
+                col++;
+        }
+        if (col < row->len) {
+                return true;
+        }
+
+        /* Finally check the first character where we might need to look at the previous row. */
+        if (row->cells[0].attr.shellintegration() == ShellIntegrationMode::ePROMPT) {
+                row = index(position - 1);
+                if (row == NULL ||
+                    !row->attr.soft_wrapped ||
+                    (row->len >= 1 /* this is guaranteed beucase soft_wrapped */ &&
+                     row->cells[row->len - 1].attr.shellintegration() != ShellIntegrationMode::ePROMPT)) {
+                        return true;
+                }
+        }
+        return false;
 }
 
 /*
@@ -857,12 +773,15 @@ Ring::discard_one_row()
 	if (G_UNLIKELY(m_start == m_writable)) {
 		reset_streams(m_writable);
 	} else if (m_start < m_writable) {
-		RowRecord record;
-		_vte_stream_advance_tail(m_row_stream, m_start * sizeof (record));
-		if (G_LIKELY(read_row_record(&record, m_start))) {
-			_vte_stream_advance_tail(m_text_stream, record.text_start_offset);
-			_vte_stream_advance_tail(m_attr_stream, record.attr_start_offset);
-		}
+                /* Advance the tail sometimes. Not always, in order to slightly improve performance. */
+                if (m_start % 256 == 0) {
+                        RowRecord record;
+                        _vte_stream_advance_tail(m_row_stream, m_start * sizeof (record));
+                        if (G_LIKELY(read_row_record(&record, m_start))) {
+                                _vte_stream_advance_tail(m_text_stream, record.text_start_offset);
+                                _vte_stream_advance_tail(m_attr_stream, record.attr_start_offset);
+                        }
+                }
 	} else {
 		m_writable = m_start;
 	}
@@ -1130,16 +1049,7 @@ Ring::frozen_row_column_to_text_offset(row_t position,
 	} else
 		records[1].text_start_offset = _vte_stream_head(m_text_stream);
 
-	offset->fragment_cells = 0;
-	offset->eol_cells = -1;
-	offset->text_offset = records[0].text_start_offset;
-
-        /* Save some work if we're in column 0. This holds true for images, whose column
-         * positions are disregarded for the purposes of wrapping. */
-        if (column == 0)
-                return true;
-
-        g_string_set_size (buffer, records[1].text_start_offset - records[0].text_start_offset);
+	g_string_set_size (buffer, records[1].text_start_offset - records[0].text_start_offset);
 	if (!_vte_stream_read(m_text_stream, records[0].text_start_offset, buffer->str, buffer->len))
 		return false;
 
@@ -1151,6 +1061,8 @@ Ring::frozen_row_column_to_text_offset(row_t position,
 	/* row and buffer now contain the same text, in different representation */
 
 	/* count the number of characters up to the given column */
+	offset->fragment_cells = 0;
+	offset->eol_cells = -1;
 	num_chars = 0;
 	for (i = 0, cell = row->cells; i < row->len && i < column; i++, cell++) {
 		if (G_LIKELY (!cell->attr.fragment())) {
@@ -1171,7 +1083,7 @@ Ring::frozen_row_column_to_text_offset(row_t position,
 		off++;
 		if ((buffer->str[off] & 0xC0) != 0x80) num_chars--;
 	}
-	offset->text_offset += off;
+	offset->text_offset = records[0].text_start_offset + off;
 	return true;
 }
 
@@ -1283,9 +1195,6 @@ Ring::rewrap(column_t columns,
 	gsize paragraph_len;  /* excluding trailing '\n' */
 	gsize attr_offset;
 	gsize old_ring_end;
-#if WITH_SIXEL
-	auto image_it = m_image_by_top_map.begin();
-#endif
 
 	if (G_UNLIKELY(length() == 0))
 		return;
@@ -1332,6 +1241,7 @@ Ring::rewrap(column_t columns,
 	old_row_index = m_start + 1;
 	while (paragraph_start_text_offset < _vte_stream_head(m_text_stream)) {
 		/* Find the boundaries of the next paragraph */
+                gsize paragraph_width = 0;
 		gboolean prev_record_was_soft_wrapped = FALSE;
 		gboolean paragraph_is_ascii = TRUE;
                 guint8 paragraph_bidi_flags = old_record.bidi_flags;
@@ -1344,6 +1254,7 @@ Ring::rewrap(column_t columns,
                                  old_row_index - 1,
                                  paragraph_start_text_offset);
 		while (old_row_index <= m_end) {
+                        paragraph_width += old_record.width;
 			prev_record_was_soft_wrapped = old_record.soft_wrapped;
 			paragraph_is_ascii = paragraph_is_ascii && old_record.is_ascii;
 			if (G_LIKELY (old_row_index < m_end)) {
@@ -1367,7 +1278,6 @@ Ring::rewrap(column_t columns,
                                  paragraph_end_text_offset,
 				prev_record_was_soft_wrapped ? "  soft_wrapped" : "",
 				paragraph_len, paragraph_is_ascii);
-
 		/* Wrap the paragraph */
 		if (attr_change.text_end_offset <= text_offset) {
 			/* Attr change at paragraph boundary, advance to next attr. */
@@ -1398,7 +1308,22 @@ Ring::rewrap(column_t columns,
 			}
 			runlength = MIN(paragraph_len, attr_change.text_end_offset - text_offset);
 
-			if (G_UNLIKELY (attr_change.attr.columns() == 0)) {
+                        if (paragraph_width <= (gsize) columns) {
+                                /* Quick shortcut code path if the entire paragraph fits in one row. */
+                                text_offset += runlength;
+                                paragraph_len -= runlength;
+                                /* The setting of "col" here is hacky. This very code here is potentially executed
+                                   multiple times within a single paragraph, if it has attribute changes. The code above
+                                   that reads the next attribute record has to iterate through those changes. Yet, we
+                                   don't want to waste time tracking those attribute changes and finding their
+                                   corresponding text offsets, we don't even want to read the text, as we won't need
+                                   that. We rely on the fact that "paragraph_width" and "columns" are constants
+                                   thoughout the wrapping of a particular paragraph, hence if this branch is hit once
+                                   then it is hit every time; also "col" is unused then in this loop and only needs to
+                                   have the correct value after we leave the loop. So each time simply set "col"
+                                   straight away to its final value. */
+                                col = paragraph_width;
+                        } else if (G_UNLIKELY (attr_change.attr.columns() == 0)) {
 				/* Combining characters all fit in the current row */
 				text_offset += runlength;
 				paragraph_len -= runlength;
@@ -1406,6 +1331,7 @@ Ring::rewrap(column_t columns,
 				while (runlength) {
 					if (col >= columns - attr_change.attr.columns() + 1) {
 						/* Wrap now, write the soft wrapped row's record */
+                                                new_record.width = col;
 						new_record.soft_wrapped = 1;
 						_vte_stream_append(new_row_stream, (char const* ) &new_record, sizeof (new_record));
 						_vte_debug_print(VTE_DEBUG_RING,
@@ -1421,19 +1347,10 @@ Ring::rewrap(column_t columns,
 							}
 						}
 
-#if WITH_SIXEL
-						if (!rewrap_images_in_range(image_it,
-                                                                            new_record.text_start_offset,
-                                                                            text_offset,
-                                                                            new_row_index))
-							goto err;
-#endif
-
 						new_row_index++;
 						new_record.text_start_offset = text_offset;
 						new_record.attr_start_offset = attr_offset;
 						col = 0;
-
 					}
 					if (paragraph_is_ascii) {
 						/* Shortcut for quickly wrapping ASCII (excluding TAB) text.
@@ -1463,6 +1380,7 @@ Ring::rewrap(column_t columns,
 
 		/* Write the record of the paragraph's last row. */
 		/* Hard wrapped, except maybe at the end of the very last paragraph */
+                new_record.width = col;
 		new_record.soft_wrapped = prev_record_was_soft_wrapped;
 		_vte_stream_append(new_row_stream, (char const* ) &new_record, sizeof (new_record));
 		_vte_debug_print(VTE_DEBUG_RING,
@@ -1477,14 +1395,6 @@ Ring::rewrap(column_t columns,
 						"      Marker #%d will be here in row %lu\n", i, new_row_index);
 			}
 		}
-
-#if WITH_SIXEL
-		if (!rewrap_images_in_range(image_it,
-                                            new_record.text_start_offset,
-                                            paragraph_end_text_offset,
-                                            new_row_index))
-			goto err;
-#endif
 
 		new_row_index++;
 		paragraph_start_text_offset = paragraph_end_text_offset;
@@ -1520,14 +1430,6 @@ Ring::rewrap(column_t columns,
 	}
 	g_free(marker_text_offsets);
 	g_free(new_markers);
-
-#if WITH_SIXEL
-        try {
-                rebuild_image_top_map();
-        } catch (...) {
-                vte::log_exception();
-        }
-#endif
 
 	_vte_debug_print(VTE_DEBUG_RING, "Ring after rewrapping:\n");
         validate();
@@ -1632,56 +1534,3 @@ Ring::write_contents(GOutputStream* stream,
 
 	return true;
 }
-
-#if WITH_SIXEL
-
-/**
- * Ring::append_image:
- * @surface: A Cairo surface object
- * @pixelwidth: vte::image::Image width in pixels
- * @pixelheight: vte::image::Image height in pixels
- * @left: Left position of image in cell units
- * @top: Top position of image in cell units
- * @cell_width: Width of image in cell units
- * @cell_height: Height of image in cell units
- *
- * Append an image to the internal image list.
- */
-void
-Ring::append_image(vte::Freeable<cairo_surface_t> surface,
-                   int pixelwidth,
-                   int pixelheight,
-                   long left,
-                   long top,
-                   long cell_width,
-                   long cell_height) /* throws */
-{
-        auto const priority = m_next_image_priority;
-        auto [it, success] = m_image_map.try_emplace
-                (priority, // key
-                 std::make_unique<vte::image::Image>(std::move(surface),
-                                                     priority,
-                                                     pixelwidth,
-                                                     pixelheight,
-                                                     left,
-                                                     top,
-                                                     cell_width,
-                                                     cell_height));
-        if (!success)
-                return;
-
-        ++m_next_image_priority;
-
-        auto const& image = it->second;
-
-        m_image_by_top_map.emplace(std::piecewise_construct,
-                                   std::forward_as_tuple(image->get_top()),
-                                   std::forward_as_tuple(image.get()));
-
-        m_image_fast_memory_used += image->resource_size ();
-
-        image_gc_region();
-        image_gc();
-}
-
-#endif /* WITH_SIXEL */

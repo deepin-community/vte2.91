@@ -1,3 +1,24 @@
+vte2.91 (0.75.92-1) unstable; urgency=medium
+
+  * New upstream release
+    - Fix bell not sounding in some cases (Closes: #1064943)
+  * Drop 2 patches applied in new release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 04 Mar 2024 12:54:58 -0500
+
+vte2.91 (0.75.91-2) unstable; urgency=medium
+
+  * Release to unstable
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 13 Feb 2024 08:47:30 -0500
+
+vte2.91 (0.75.91-1) experimental; urgency=medium
+
+  * New upstream release
+  * Cherry-pick a patch to fix 32-bit build
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 13 Feb 2024 07:52:29 -0500
+
 vte2.91 (0.75.0-1) experimental; urgency=medium
 
   [ Jeremy Bícha ]
