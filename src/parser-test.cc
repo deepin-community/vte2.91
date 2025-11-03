@@ -47,135 +47,21 @@ using namespace vte::parser;
 Parser parser{};
 Sequence seq{parser};
 
-#if 0
-static char const*
-seq_to_str(unsigned int type)
-{
-        switch (type) {
-        case VTE_SEQ_NONE: return "NONE";
-        case VTE_SEQ_IGNORE: return "IGNORE";
-        case VTE_SEQ_GRAPHIC: return "GRAPHIC";
-        case VTE_SEQ_CONTROL: return "CONTROL";
-        case VTE_SEQ_ESCAPE: return "ESCAPE";
-        case VTE_SEQ_CSI: return "CSI";
-        case VTE_SEQ_DCS: return "DCS";
-        case VTE_SEQ_OSC: return "OSC";
-        case VTE_SEQ_APC: return "APC";
-        case VTE_SEQ_PM: return "PM";
-        case VTE_SEQ_SOS: return "SOS";
-        case VTE_SEQ_SCI: return "SCI";
-        default:
-                g_assert_not_reached();
-        }
-}
-
-static char const*
-cmd_to_str(unsigned int command)
-{
-        switch (command) {
-#define _VTE_CMD(cmd) case VTE_CMD_##cmd: return #cmd;
-#include "parser-cmd.hh"
-#undef _VTE_CMD
-        default:
-                static char buf[32];
-                snprintf(buf, sizeof(buf), "UNKOWN(%u)", command);
-                return buf;
-        }
-}
-
-static char const*
-charset_to_str(unsigned int cs)
-{
-        switch (cs) {
-#define _VTE_CHARSET_PASTE(name) case VTE_CHARSET_##name: return #name;
-#define _VTE_CHARSET(name) _VTE_CHARSET_PASTE(name)
-#define _VTE_CHARSET_ALIAS_PASTE(name1,name2)
-#define _VTE_CHARSET_ALIAS(name1,name2)
-#include "parser-charset.hh"
-#undef _VTE_CHARSET_PASTE
-#undef _VTE_CHARSET
-#undef _VTE_CHARSET_ALIAS_PASTE
-#undef _VTE_CHARSET_ALIAS
-        default:
-                static char buf[32];
-                snprintf(buf, sizeof(buf), "UNKOWN(%u)", cs);
-                return buf;
-        }
-}
-#endif
-
-static const char c0str[][6] = {
-        "NUL", "SOH", "STX", "ETX", "EOT", "ENQ", "ACK", "BEL",
-        "BS", "HT", "LF", "VT", "FF", "CR", "SO", "SI",
-        "DLE", "DC1", "DC2", "DC3", "DC4", "NAK", "SYN", "ETB",
-        "CAN", "EM", "SUB", "ESC", "FS", "GS", "RS", "US",
-        "SPACE"
-};
-
-static const char c1str[][5] = {
-        "DEL",
-        "0x80", "0x81", "BPH", "NBH", "0x84", "NEL", "SSA", "ESA",
-        "HTS", "HTJ", "VTS", "PLD", "PLU", "RI", "SS2", "SS3",
-        "DCS", "PU1", "PU2", "STS", "CCH", "MW", "SPA", "EPA",
-        "SOS", "0x99", "SCI", "CSI", "ST", "OSC", "PM", "APC"
-};
-
-static void
-print_escaped(std::u32string const& s)
-{
-        for (auto it : s) {
-                uint32_t c = (char32_t)it;
-
-                if (c <= 0x20)
-                        g_print("%s ", c0str[c]);
-                else if (c < 0x7f)
-                        g_print("%c ", c);
-                else if (c < 0xa0)
-                        g_print("%s ", c1str[c - 0x7f]);
-                else
-                        g_print("U+%04X", c);
-        }
-        g_print("\n");
-}
-
-#if 0
-static void
-print_seq()
-{
-        auto c = seq.terminator();
-        if (seq.command() == VTE_CMD_GRAPHIC) {
-                char buf[7];
-                buf[g_unichar_to_utf8(c, buf)] = 0;
-                g_print("%s U+%04X [%s]\n", cmd_to_str(seq.command()),
-                        c,
-                        g_unichar_isprint(c) ? buf : "�");
-        } else {
-                g_print("%s", cmd_to_str(seq.command()));
-                if (seq.size()) {
-                        g_print(" ");
-                        for (unsigned int i = 0; i < seq.size(); i++) {
-                                if (i > 0)
-                                        g_print(";");
-                                g_print("%d", seq.param(i));
-                        }
-                }
-                g_print("\n");
-        }
-}
-#endif
-
 class vte_seq_builder : public u32SequenceBuilder {
 public:
         vte_seq_builder(unsigned int type,
                         uint32_t f)
-                : u32SequenceBuilder(type, f)
+                : u32SequenceBuilder{}
         {
+                set_type(type);
+                set_final(f);
         }
 
         vte_seq_builder(unsigned int type,
                         u32SequenceBuilder::string_type const& str)
-                : u32SequenceBuilder(type)
+                : u32SequenceBuilder{}
         {
+                set_type(type);
                 set_string(str);
         }
 
@@ -193,13 +79,6 @@ public:
                 for (unsigned int i = 0; i < n; ++i)
                         append_param(params[i]);
         }
-
-        void print(bool c1 = false) const noexcept
-        {
-                std::u32string s;
-                to_string(s, c1);
-                print_escaped(s);
-        }
 };
 
 static int
@@ -211,6 +90,23 @@ feed_parser(std::u32string const& s)
                 if (rv < 0)
                         break;
         }
+        return rv;
+}
+
+// Feeds the string to the parser, expecting NONE returns
+// until the last character.
+static int
+feed_parser_until(std::u32string const& s)
+{
+        int rv = VTE_SEQ_NONE;
+        auto consumed = 0uz;
+        for (auto it : s) {
+                ++consumed;
+                rv = parser.feed((uint32_t)(char32_t)it);
+                if (rv != 0)
+                        break;
+        }
+        g_assert_cmpuint(consumed, ==, s.size());
         return rv;
 }
 
@@ -738,25 +634,25 @@ test_seq_csi(void)
 
 static void
 test_seq_sci(uint32_t f,
-             bool valid)
+             unsigned type)
 {
         vte_seq_builder b{VTE_SEQ_SCI, f};
 
         /* First with C0 SCI */
         auto rv = feed_parser(b, false);
-        if (valid) {
+        g_assert_cmpint(rv, ==, type);
+        if (type == VTE_SEQ_SCI) {
                 g_assert_cmpint(rv, ==, VTE_SEQ_SCI);
-                b.assert_equal_full(seq);
-        } else
-                g_assert_cmpint(rv, !=, VTE_SEQ_SCI);
+                g_assert_cmpuint(seq.terminator(), ==, f);
+        }
 
         /* Now with C1 SCI */
         rv = feed_parser(b, true);
-        if (valid) {
-                g_assert_cmpint(rv, ==, VTE_SEQ_SCI);
+        g_assert_cmpint(rv, ==, type);
+        if (type == VTE_SEQ_SCI) {
                 b.assert_equal_full(seq);
-        } else
-                g_assert_cmpint(rv, !=, VTE_SEQ_SCI);
+                g_assert_cmpuint(seq.terminator(), ==, f);
+        }
 }
 
 static void
@@ -768,12 +664,43 @@ test_seq_sci(void)
          */
         parser.reset();
 
+        for (uint32_t f = 0x0; f <= 0x7; ++f)
+                test_seq_sci(f, VTE_SEQ_IGNORE);
         for (uint32_t f = 0x8; f <= 0xd; ++f)
-                test_seq_sci(f, true);
+                test_seq_sci(f, VTE_SEQ_SCI);
+        for (uint32_t f = 0xe; f <= 0x19; ++f)
+                test_seq_sci(f, VTE_SEQ_IGNORE);
+        for (uint32_t f = 0x1c; f <= 0x1f; ++f)
+                test_seq_sci(f, VTE_SEQ_IGNORE);
         for (uint32_t f = 0x20; f <= 0x7e; ++f)
-                test_seq_sci(f, true);
-        for (uint32_t f = 0x7f; f <= 0xff; ++f)
-                test_seq_sci(f, false);
+                test_seq_sci(f, VTE_SEQ_SCI);
+
+        // C1 controls omitted, since they abort the SCI and
+        // start their resp. sequence.
+
+        for (uint32_t f = 0xa0; f <= 0xff; ++f)
+                test_seq_sci(f, VTE_SEQ_IGNORE);
+
+        // SUB is special: it aborts the SCI and substitutes
+        test_seq_sci(0x1a, VTE_SEQ_CONTROL);
+
+        // ESC is special: it aborts the SCI and starts an escape sequence
+        test_seq_sci(0x1b, VTE_SEQ_NONE);
+
+        // DEL is special: it doesn't do anything
+        test_seq_sci(0x7f, VTE_SEQ_NONE);
+        parser.reset();
+        auto rv = feed_parser(U"\eZ\u007Fa"s);
+        g_assert_cmpint(rv, ==, VTE_SEQ_SCI);
+        g_assert_cmpuint(seq.terminator(), ==, U'a');
+        rv = feed_parser(U"\u009A\u007Fa"s);
+        g_assert_cmpint(rv, ==, VTE_SEQ_SCI);
+        g_assert_cmpuint(seq.terminator(), ==, U'a');
+
+        // Test some sporadic non-8-bit final characters just for completeness
+        test_seq_sci(0x100, VTE_SEQ_IGNORE);
+        test_seq_sci(0xFFFF, VTE_SEQ_IGNORE);
+        test_seq_sci(0x10FFFF, VTE_SEQ_IGNORE);
 }
 
 G_GNUC_UNUSED
@@ -853,16 +780,26 @@ test_seq_dcs(uint32_t f,
                 /* First with C0 DCS */
                 auto rv0 = feed_parser(b, false);
                 g_assert_cmpint(rv0, ==, expected_rv0);
-                if (rv0 != VTE_SEQ_ESCAPE && rv0 != VTE_SEQ_NONE)
+                if (rv0 == VTE_SEQ_DCS)
                         b.assert_equal_full(seq);
-                if (rv0 == VTE_SEQ_ESCAPE)
+                else if (rv0 == VTE_SEQ_ESCAPE)
                         g_assert_cmpint(seq.command(), ==, VTE_CMD_ST);
+                else if (rv0 == VTE_SEQ_IGNORE)
+                        ;
+                else
+                        g_assert_not_reached();
 
                 /* Now with C1 DCS */
                 auto rv1 = feed_parser(b, true);
                 g_assert_cmpint(rv1, ==, expected_rv1);
-                if (rv1 != VTE_SEQ_NONE)
+                if (rv1 == VTE_SEQ_DCS)
                         b.assert_equal_full(seq);
+                else if (rv1 == VTE_SEQ_CONTROL)
+                        g_assert_cmpint(seq.command(), ==, VTE_CMD_ST);
+                else if (rv1 == VTE_SEQ_IGNORE)
+                        ;
+                else
+                        g_assert_not_reached();
         }
 }
 
@@ -877,7 +814,7 @@ test_seq_dcs(uint32_t p,
                 test_seq_dcs(f, p, params, i, 0, str, expected_rv);
         }
 
-        for (uint32_t f = 0x30; f < 0x7f; f++) {
+        for (uint32_t f = 0x40; f < 0x7f; f++) {
                 for (i[0] = 0x20; i[0] < 0x30; i[0]++) {
                         test_seq_dcs(f, p, params, i, 1, str, expected_rv);
                         for (i[1] = 0x20; i[1] < 0x30; i[1]++) {
@@ -934,7 +871,7 @@ static void
 test_seq_dcs(void)
 {
         /* Length exceeded */
-        test_seq_dcs_simple(std::u32string(VTE_SEQ_STRING_MAX_CAPACITY + 1, 0x100000), VTE_SEQ_NONE);
+        test_seq_dcs_simple(std::u32string(VTE_SEQ_STRING_MAX_CAPACITY + 1, 0x100000), VTE_SEQ_IGNORE);
 
         test_seq_dcs(U""s);
         test_seq_dcs(U"123;TESTING"s);
@@ -966,6 +903,53 @@ test_seq_dcs_known(void)
         test_seq_dcs_known(f, VTE_SEQ_PARAMETER_CHAR_##p, VTE_SEQ_INTERMEDIATE_CHAR_##i, VTE_CMD_##cmd);
 #include "parser-dcs.hh"
 #undef _VTE_SEQ
+}
+
+static void
+test_seq_dcs_misc(void)
+{
+        // Misc DCS checks
+
+        auto test = [](std::u32string str,
+                       int expected_rv = VTE_SEQ_IGNORE) -> void {
+                parser.reset();
+                auto const rv = feed_parser_until(str);
+                g_assert_cmpint(rv, ==, expected_rv);
+        };
+
+        // Check that a non-7-bit character acts as an invalid
+        // final character and ignores until ST
+
+        test(U"\eP\u0100a\e\\"s);
+        test(U"\u0090\u0100a\e\\"s);
+
+        // with params
+        test(U"\eP1\u0100a\e\\"s);
+        test(U"\u00901\u0100a\e\\"s);
+
+        // with intermediate
+        test(U"\eP1 \u0100a\e\\"s);
+        test(U"\u00901 \u0100a\e\\"s);
+
+        // with pintro
+        test(U"\eP?1 \u0100a\e\\"s);
+        test(U"\u0090?1 \u0100a\e\\"s);
+
+        // lone ST
+        test(U"\e\\"s, VTE_SEQ_ESCAPE);
+        test(U"\u009C"s, VTE_SEQ_CONTROL);
+        test(U"\e\e\\"s, VTE_SEQ_ESCAPE);
+        test(U"\e\u009C"s, VTE_SEQ_CONTROL);
+
+        // Check that C1 ST is recognised while in DCS state before the control string
+        test(U"\e\u009C"s, VTE_SEQ_CONTROL);
+        test(U"\u0090\u009C"s, VTE_SEQ_IGNORE);
+        test(U"\eP1\u009C"s, VTE_SEQ_IGNORE);
+        test(U"\u00901\u009C"s, VTE_SEQ_IGNORE);
+        test(U"\eP1 \u009C"s, VTE_SEQ_IGNORE);
+        test(U"\u00901 \u009C"s, VTE_SEQ_IGNORE);
+        test(U"\eP?1 \u009C"s, VTE_SEQ_IGNORE);
+        test(U"\u0090?1 \u009C"s, VTE_SEQ_IGNORE);
 }
 
 static void
@@ -1120,6 +1104,61 @@ test_seq_csi_max(void)
 }
 
 static void
+test_seq_csi_misc(void)
+{
+        // Misc CSI checks
+
+        auto test = [](std::u32string str,
+                       std::initializer_list<int> expected_rvs) -> void {
+                parser.reset();
+                auto rvit = expected_rvs.begin();
+                for (auto it : str) {
+                        auto const rv = parser.feed((uint32_t)(char32_t)it);
+                        if (rv < 0)
+                                break;
+
+                        g_assert_cmpint(rv, ==, *rvit);
+                        g_assert_true(rvit != expected_rvs.end());
+                        ++rvit;
+                }
+        };
+
+        // Check that a non-7-bit character acts as an invalid
+        // final character and aborts the sequence
+
+        test(U"\e[\u0100a"s, {0, 0, VTE_SEQ_IGNORE, VTE_SEQ_GRAPHIC});
+        test(U"\u009B\u0100a"s, {0, VTE_SEQ_IGNORE, VTE_SEQ_GRAPHIC});
+
+        // with params
+        test(U"\e[1\u0100a"s, {0, 0, 0, VTE_SEQ_IGNORE, VTE_SEQ_GRAPHIC});
+        test(U"\u009B1\u0100a"s, {0, 0, VTE_SEQ_IGNORE, VTE_SEQ_GRAPHIC});
+
+        // with intermediate
+        test(U"\e[1 \u0100a"s, {0, 0, 0, 0, VTE_SEQ_IGNORE, VTE_SEQ_GRAPHIC});
+        test(U"\u009B1 \u0100a"s, {0, 0, 0, VTE_SEQ_IGNORE, VTE_SEQ_GRAPHIC});
+
+        // with pintro
+        test(U"\e[?1 \u0100a"s, {0, 0, 0, 0, 0, VTE_SEQ_IGNORE, VTE_SEQ_GRAPHIC});
+        test(U"\u009B?1 \u0100a"s, {0, 0, 0, 0, VTE_SEQ_IGNORE, VTE_SEQ_GRAPHIC});
+
+        // Check that C1 ST is dispatched while in CSI state
+        auto test_st = [](std::u32string str) -> void {
+                feed_parser(str);
+                g_assert_cmpuint(seq.terminator(), ==, 0x9c);
+        };
+        test_st(U"\u009C"s);
+        test_st(U"\u009C"s);
+        test_st(U"\e[\u009C"s);
+        test_st(U"\u009B\u009C"s);
+        test_st(U"\e[1\u009C"s);
+        test_st(U"\u009B[1\u009C"s);
+        test_st(U"\e[1 \u009C"s);
+        test_st(U"\u009B[1 \u009C"s);
+        test_st(U"\e[?1 \u009C"s);
+        test_st(U"\u009B[?1 \u009C"s);
+}
+
+static void
 test_seq_glue_arg(char const* str,
                   unsigned int n_args,
                   unsigned int n_final_args)
@@ -1243,6 +1282,185 @@ test_seq_glue_arg(void)
         g_assert_cmpint(seq.collect1(it, 42, 100, 200), ==, 100);
 }
 
+static void
+test_seq_glue_bignum(void)
+{
+        parser.reset();
+
+        // Since this test a convenience function that operates
+        // only on the vte_seq_arg_t's params, we can speed up
+        // these tests by setting them directly instead of
+        // building a string, parsing it and then testing the
+        // params.
+        auto raw_seq = *seq.seq_ptr();
+        auto& n_args = raw_seq->n_args;
+        auto& args = raw_seq->args;
+        raw_seq->n_final_args = 1;
+
+        auto test = [&](std::initializer_list<int> params,
+                        bool ok = true) noexcept -> void
+        {
+                n_args = 0;
+                for (auto p : params) {
+                        args[n_args] = vte_seq_arg_init(p);
+                        vte_seq_arg_finish(&args[n_args], (n_args + 1) < params.size());
+                        ++n_args;
+                }
+
+                auto const idx = 0;
+                auto v = seq.collect_number(idx);
+
+                if (ok) {
+                        g_assert_true(v);
+
+                        auto expected_v = uint64_t{0};
+                        for (auto ev : params) {
+                                expected_v <<= 16;
+                                expected_v += ev != -1 ? ev : 0;
+                        }
+
+                        g_assert_cmphex(*v, ==, expected_v);
+                } else {
+                        g_assert_false(v);
+                }
+        };
+
+        test({}); // ""
+        test({0}); // "0"
+        test({11}); // "11"
+
+        test({1, 0}); // "1:0"
+        test({31, 0}); // "31:0"
+        test({1, 65535}); // "1:65535"
+        test({65535, 0}); // "65535:0"
+        test({65535, 65535}); // "65535:65535"
+
+        test({2, -1}); // "2:"
+        test({3, -1, -1}); // "3::"
+        test({5, -1, -1, -1}); // "5:::"
+        test({1, -1, 1, -1}); // "1::1:"
+        test({2, 3, 5, 7}); // "2:3:5:7"
+        test({65535, 65535, 65535, 65535}); // "65535:65535:65535:65535", max
+
+        test({1, -1, -1, -1, -1}, false); // "1::::", too many components
+        test({-1, 1}, false); // ":1", leading default param
+        test({0, 1}); // "0:1" // however this is ok
+}
+
+static void
+test_seq_glue_uchar(void)
+{
+        parser.reset();
+
+        // Since this test a convenience function that operates
+        // only on the vte_seq_arg_t's params, we can speed up
+        // these tests by setting them directly instead of
+        // building a string, parsing it and then testing the
+        // params.
+        auto raw_seq = *seq.seq_ptr();
+        auto& n_args = raw_seq->n_args;
+        auto& args = raw_seq->args;
+        raw_seq->n_final_args = 1;
+
+        auto test_zero = [&](int32_t c,
+                             int zero_v,
+                             bool valid,
+                             int default_v = 0x20) noexcept -> void
+        {
+                if (c == -1) {
+                        n_args = 0;
+                } else {
+                        n_args = 1;
+                        args[0] = vte_seq_arg_init(c);
+                        vte_seq_arg_finish(&args[0]); // final
+                }
+
+                auto const rc = seq.collect_char(0, default_v, zero_v);
+                if (valid) {
+                        g_assert_true(rc);
+                        g_assert_cmphex(*rc, ==, default_v);
+                } else {
+                        g_assert_false(rc);
+                }
+        };
+
+        auto test = [&](uint32_t c,
+                        bool valid = true) noexcept -> void
+        {
+                if (c < 0x10000u) {
+                        n_args = 1;
+                        args[0] = vte_seq_arg_init(c);
+                        vte_seq_arg_finish(&args[0]); // final
+                } else {
+                        n_args = 2;
+                        args[0] = vte_seq_arg_init(c >> 16);
+                        vte_seq_arg_finish(&args[0], true); // nonfinal
+                        args[1] = vte_seq_arg_init(c & 0xffffu);
+                        vte_seq_arg_finish(&args[1]); // final
+                }
+
+                auto const rc = seq.collect_char(0);
+                if (valid) {
+                        g_assert_true(rc);
+                        g_assert_cmphex(*rc, ==, c);
+                } else {
+                        g_assert_false(rc);
+                }
+        };
+
+        auto test_surrogates = [&](char32_t c) noexcept -> void
+        {
+                auto const sc = c - 0x10000u;
+
+                n_args = 2;
+                args[0] = vte_seq_arg_init((sc >> 10) + 0xd800u);
+                vte_seq_arg_finish(&args[0], true); // nonfinal
+                args[1] = vte_seq_arg_init((sc & 0x3ffu) + 0xdc00u);
+                vte_seq_arg_finish(&args[1]); // final
+
+                auto const rc = seq.collect_char(0);
+                g_assert_true(rc);
+                g_assert_cmphex(*rc, ==, c);
+        };
+
+        test_zero(-1, -1, true); // default arg returns default value (0x20)
+        test_zero(-1, -1, false, 0); // default arg but default value NUL is C0
+        test_zero(0, -1, true); // zero arg treated as default returns default value (0x20)
+        test_zero(0, -1, false, 0); // zero arg treated as default fails because NUL is C0
+        test_zero(0, 0, false); // zero arg treated as zero fails because NUL is C0
+        test_zero(0, 0x20, true); // zero arg treated as default value (0x20)
+        for (auto c = 1u; c < 0x20u; ++c)
+                test(c, false); // C0
+        for (auto c = 0x20u; c < 0x7fu; ++c)
+                test(c);
+        for (auto c = 0x7fu; c < 0xa0u; ++c)
+                test(c, false); // C1
+        for (auto c = 0xa0u; c < 0xd800u; ++c)
+                test(c);
+        for (auto c = 0xd800; c < 0xe000; ++c)
+                test(c, false); // surrogate
+        for (auto c = 0xe000; c < 0x10000; ++c)
+                test(c);
+
+        for (auto c = 0x10000u; c < 0x110000u; ++c) {
+                test(c);
+                test_surrogates(c);
+        }
+
+        test(0x110000, false);
+
+        // Test default value
+        {
+                n_args = 1;
+                args[0] = vte_seq_arg_init(-1);
+                vte_seq_arg_finish(&args[0]); // final
+
+                auto const rc = seq.collect_char(0);
+                g_assert_true(rc);
+                g_assert_cmphex(*rc, ==, 0x20); // ' '
+        }
+}
+
 static int
 feed_parser_st(vte_seq_builder& b,
                bool c1 = false,
@@ -1363,18 +1581,30 @@ test_seq_glue_string(void)
         g_assert_true(seq.string() == str);
 }
 
+template<typename CharT>
 static void
 test_seq_glue_string_tokeniser(void)
 {
-        std::string str{"a;1b:17:test::b:;3;5;def;17 a;ghi;"s};
+        using string_type = std::basic_string<CharT>;
+        using tokeniser_type = StringTokeniserBase<CharT>;
+        using char_type = CharT;
 
-        StringTokeniser tokeniser{str, ';'};
+        auto L = [](char const* str) constexpr -> auto {
+                auto rv = string_type{};
+                for (auto i = size_t(0); str[i]; ++i)
+                        rv.push_back(char_type(str[i]));
+                return rv;
+        };
+
+        auto str = L("a;1b:17:test::b:;3;5;def;17 a;ghi;65535;65536;-1;");
+
+        auto tokeniser = tokeniser_type{str, ';'};
 
         auto start = tokeniser.cbegin();
         auto end = tokeniser.cend();
 
         auto pit = start;
-        for (auto it : {"a"s, "1b:17:test::b:"s, "3"s, "5"s, "def"s, "17 a"s, "ghi"s, ""s}) {
+        for (auto&& it : {L("a"), L("1b:17:test::b:"), L("3"), L("5"), L("def"), L("17 a"), L("ghi"), L("65535"), L("65536"), L("-1"), L("")}) {
                 g_assert_true(it == *pit);
 
                 /* Use std::find to see if the InputIterator implementation
@@ -1390,7 +1620,7 @@ test_seq_glue_string_tokeniser(void)
         auto len = str.size();
         size_t pos = 0;
         pit = start;
-        for (auto it : {1, 14, 1, 1, 3, 4, 3, 0}) {
+        for (auto it : {1, 14, 1, 1, 3, 4, 3, 5, 5, 2, 0}) {
                 g_assert_cmpuint(it, ==, pit.size());
                 g_assert_cmpuint(len, ==, pit.size_remaining());
 
@@ -1405,19 +1635,20 @@ test_seq_glue_string_tokeniser(void)
         g_assert_cmpuint(pos, ==, str.size() + 1);
 
         pit = start;
-        for (auto it : {-2, -2, 3, 5, -2, -2, -2, -1}) {
-                int num;
-                bool v = pit.number(num);
-                if (it == -2)
-                        g_assert_false(v);
-                else
-                        g_assert_cmpint(it, ==, num);
+        for (auto it : {-2, -2, 3, 5, -2, -2, -2, 65535, -2, -2, -1}) {
+                auto v = pit.number();
+                if (it == -2) {
+                        g_assert_false(bool(v));
+                } else {
+                        g_assert_true(bool(v));
+                        g_assert_cmpint(it, ==, *v);
+                }
 
                 ++pit;
         }
 
         /* Test range for */
-        for (auto it : tokeniser)
+        for ([[maybe_unused]] auto it : tokeniser)
                 ;
 
         /* Test different separator */
@@ -1425,10 +1656,10 @@ test_seq_glue_string_tokeniser(void)
         ++pit;
 
         auto substr = *pit;
-        StringTokeniser subtokeniser{substr, ':'};
+        auto subtokeniser = tokeniser_type{substr, ':'};
 
         auto subpit = subtokeniser.cbegin();
-        for (auto it : {"1b"s, "17"s, "test"s, ""s, "b"s, ""s}) {
+        for (auto&& it : {L("1b"), L("17"), L("test"), L(""), L("b"), L("")}) {
                 g_assert_true(it == *subpit);
 
                 ++subpit;
@@ -1436,36 +1667,36 @@ test_seq_glue_string_tokeniser(void)
         g_assert_true(subpit == subtokeniser.cend());
 
         /* Test another string, one that doesn't end with an empty token */
-        std::string str2{"abc;defghi"s};
-        StringTokeniser tokeniser2{str2, ';'};
+        auto str2 = L("abc;defghi");
+        auto tokeniser2 = tokeniser_type{str2, ';'};
 
         g_assert_cmpint(std::distance(tokeniser2.cbegin(), tokeniser2.cend()), ==, 2);
         auto pit2 = tokeniser2.cbegin();
-        g_assert_true(*pit2 == "abc"s);
+        g_assert_true(*pit2 == L("abc"));
         ++pit2;
-        g_assert_true(*pit2 == "defghi"s);
+        g_assert_true(*pit2 == L("defghi"));
         ++pit2;
         g_assert_true(pit2 == tokeniser2.cend());
 
         /* Test another string, one that starts with an empty token */
-        std::string str3{";abc"s};
-        StringTokeniser tokeniser3{str3, ';'};
+        auto str3 = L(";abc");
+        auto tokeniser3 = tokeniser_type{str3, ';'};
 
         g_assert_cmpint(std::distance(tokeniser3.cbegin(), tokeniser3.cend()), ==, 2);
         auto pit3 = tokeniser3.cbegin();
-        g_assert_true(*pit3 == ""s);
+        g_assert_true(*pit3 == L(""));
         ++pit3;
-        g_assert_true(*pit3 == "abc"s);
+        g_assert_true(*pit3 == L("abc"));
         ++pit3;
         g_assert_true(pit3 == tokeniser3.cend());
 
         /* And try an empty string, which should split into one empty token */
-        std::string str4{""s};
-        StringTokeniser tokeniser4{str4, ';'};
+        auto str4 = L("");
+        auto tokeniser4 = tokeniser_type{str4, ';'};
 
         g_assert_cmpint(std::distance(tokeniser4.cbegin(), tokeniser4.cend()), ==, 1);
         auto pit4 = tokeniser4.cbegin();
-        g_assert_true(*pit4 == ""s);
+        g_assert_true(*pit4 == L(""));
         ++pit4;
         g_assert_true(pit4 == tokeniser4.cend());
 }
@@ -1476,14 +1707,22 @@ test_seq_glue_sequence_builder(void)
         /* This is sufficiently tested by being used in all the other tests,
          * but if there's anything remaining to be tested, do it here.
          */
-}
 
-static void
-test_seq_glue_reply_builder(void)
-{
-        /* Nothing to test here; ReplyBuilder is just a constructor for
-         * SequenceBuilder.
-         */
+        vte_seq_builder b{VTE_SEQ_CSI, 'm'};
+        b.append_param(-1);
+        b.append_param(1);
+        b.append_param(-1);
+        b.append_params({2, -2, -1, 3});
+        b.append_subparams({4, -1, -2, 5, -1, 6});
+        b.append_param(7);
+        b.append_param(-1);
+        b.append_param(8);
+
+        auto str = std::u32string{};
+        b.to_string(str);
+
+        g_assert_true(str == U"\e[;1;;2;;3;4::5::6;7;;8m"s);
+
 }
 
 int
@@ -1495,10 +1734,14 @@ main(int argc,
         g_test_add_func("/vte/parser/sequences/arg", test_seq_arg);
         g_test_add_func("/vte/parser/sequences/string", test_seq_string);
         g_test_add_func("/vte/parser/sequences/glue/arg", test_seq_glue_arg);
+        g_test_add_func("/vte/parser/sequences/glue/bignum", test_seq_glue_bignum);
+        g_test_add_func("/vte/parser/sequences/glue/uchar", test_seq_glue_uchar);
         g_test_add_func("/vte/parser/sequences/glue/string", test_seq_glue_string);
-        g_test_add_func("/vte/parser/sequences/glue/string-tokeniser", test_seq_glue_string_tokeniser);
+        g_test_add_func("/vte/parser/sequences/glue/string-tokeniser/char", test_seq_glue_string_tokeniser<char>);
+        // requires newest fast_float
+        // g_test_add_func("/vte/parser/sequences/glue/string-tokeniser/char8_t", test_seq_glue_string_tokeniser<char8_t>);
+        g_test_add_func("/vte/parser/sequences/glue/string-tokeniser/char32_t", test_seq_glue_string_tokeniser<char32_t>);
         g_test_add_func("/vte/parser/sequences/glue/sequence-builder", test_seq_glue_sequence_builder);
-        g_test_add_func("/vte/parser/sequences/glue/reply-builder", test_seq_glue_reply_builder);
         g_test_add_func("/vte/parser/sequences/control", test_seq_control);
         g_test_add_func("/vte/parser/sequences/escape/invalid", test_seq_esc_invalid);
         g_test_add_func("/vte/parser/sequences/escape/charset/94", test_seq_esc_charset_94);
@@ -1515,10 +1758,12 @@ main(int argc,
         g_test_add_func("/vte/parser/sequences/csi/parameters", test_seq_csi_param);
         g_test_add_func("/vte/parser/sequences/csi/clear", test_seq_csi_clear);
         g_test_add_func("/vte/parser/sequences/csi/max", test_seq_csi_max);
+        g_test_add_func("/vte/parser/sequences/csi/misc", test_seq_csi_misc);
         g_test_add_func("/vte/parser/sequences/sci", test_seq_sci);
         g_test_add_func("/vte/parser/sequences/sci/known", test_seq_sci_known);
         g_test_add_func("/vte/parser/sequences/dcs", test_seq_dcs);
         g_test_add_func("/vte/parser/sequences/dcs/known", test_seq_dcs_known);
+        g_test_add_func("/vte/parser/sequences/dcs/misc", test_seq_dcs_misc);
         g_test_add_func("/vte/parser/sequences/osc", test_seq_osc);
 
         return g_test_run();

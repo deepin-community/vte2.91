@@ -17,22 +17,22 @@
 project(
   'vte',
   ['c', 'cpp'],
-  version: '0.75.92',
+  version: '0.82.1',
   license: ['LGPL-3.0-or-later', 'GPL-3.0-or-later'],
   default_options: [
     'buildtype=release',
     'warning_level=0',
     'b_ndebug=false',
   ],
-  meson_version: '>= 0.60.0',
+  meson_version: '>= 1.3.2',
 )
 
 # Compiler requirements
 
 c_req_std                 = 'gnu11'
-cxx_req_std               = 'gnu++20'
-gxx_req_version           = '10.0'
-clangxx_req_version       = '11.0'
+cxx_req_std               = 'gnu++23'
+gxx_req_version           = '12.1'
+clangxx_req_version       = '14.0'
 py_req_version            = '3.7'
 
 # Version requirements
@@ -41,24 +41,25 @@ gtk3_req_version          = '3.24.0'
 gtk3_min_req_version      = '3.24'
 gtk3_max_allowed_version  = '3.24'
 
-gtk4_req_version          = '4.12'
-gtk4_min_req_version      = '4.12'
-gtk4_max_allowed_version  = '4.12'
+gtk4_req_version          = '4.14.0'
+gtk4_min_req_version      = '4.14'
+gtk4_max_allowed_version  = '4.14'
 
-cairo_req_version         = '1.0'
 cairo_gobject_req_version = '1.0'
+cairo_req_version         = '1.0'
+fmt_req_version           = '11.0.0'
 fribidi_req_version       = '1.0.0'
 gio_req_version           = '2.72.0'
-glib_req_version          = '2.72.0'
-glib_min_req_version      = '2.72'
 glib_max_allowed_version  = '2.72'
+glib_min_req_version      = '2.72'
+glib_req_version          = '2.72.0'
 gnutls_req_version        = '3.2.7'
 icu_uc_req_version        = '4.8'
+liblz4_req_version        = '1.9'
 pango_req_version         = '1.22.0'
 pcre2_req_version         = '10.21'
+simdutf_req_version       = '6.2.0'
 systemd_req_version       = '220'
-
-liblz4_req_version        = '1.9'
 
 # API
 
@@ -89,6 +90,10 @@ lt_current = vte_major_version + lt_age
 
 libvte_gtk3_soversion = '@0@.@1@.@2@'.format(libvte_soversion, lt_current, lt_revision)
 libvte_gtk4_soversion = libvte_soversion.to_string()
+
+# Backward compatibility
+lt_current_darwin = lt_current + 1
+libvte_gtk3_darwinversions = [lt_current_darwin, '@0@.@1@.0'.format(lt_current_darwin, lt_revision)]
 
 # i18n
 
@@ -165,6 +170,8 @@ if cxx.get_id() == 'clang'
   assert(cxx.version().version_compare('>=' + clangxx_req_version), 'needs clang++ >= ' + clangxx_req_version + ' for ' + cxx_req_std + ' support')
 endif
 
+have_gnu_ld = cxx.get_linker_id() == 'ld.bfd' or cxx.get_linker_id() == 'ld.gold'
+
 # Python interpreter
 
 py_req_modules = [
@@ -184,6 +191,9 @@ config_h = configuration_data()
 
 config_h.set_quoted('GETTEXT_PACKAGE', vte_gettext_domain)
 config_h.set_quoted('VERSION', vte_version)
+config_h.set('VERSION_MAJOR', vte_major_version)
+config_h.set('VERSION_MINOR', vte_minor_version)
+config_h.set('VERSION_MICRO', vte_micro_version)
 config_h.set10('VTE_DEBUG', enable_debug)
 config_h.set10('WITH_A11Y', get_option('a11y'))
 config_h.set10('WITH_FRIBIDI', get_option('fribidi'))
@@ -220,7 +230,7 @@ endif
 libc_feature_defines = [
   ['_GNU_SOURCE', '1'],
   ['_POSIX_C_SOURCE', '200809L'],
-  ['_XOPEN_SOURCE', '700'],
+  ['_XOPEN_SOURCE', '800'],
   ['_XOPEN_SOURCE_EXTENDED', '1'],
 ]
 
@@ -257,11 +267,18 @@ endforeach
 # Check for symbols
 
 check_symbols_required = [
-  ['TIOCGWINSZ', 'sys/ioctl.h'],
+  ['TIOCGWINSZ', ['sys/ioctl.h', 'sys/termios.h',]],
 ]
 
 foreach symbol: check_symbols_required
-  assert(cxx.has_header_symbol(symbol[1], symbol[0]), symbol[0] + ' not found')
+  found=false
+  foreach header : symbol[1]
+    if cxx.has_header_symbol(header, symbol[0])
+      found=true
+      break
+    endif
+  endforeach
+  assert(found, symbol[0] + ' not found')
 endforeach
 
 # Check for functions
@@ -333,7 +350,7 @@ check_functions = [
   ],
   [
     'pread',
-    'ssize_t (*func)(int, void*, size_t off_t)',
+    'ssize_t (*func)(int, void*, size_t, off_t)',
      ['unistd.h'],
      [],
      false,
@@ -573,6 +590,29 @@ if not enable_debug
   release_args += ['-DG_DISABLE_ASSERT', '-DG_DISABLE_CAST_CHECKS']
 endif
 
+# Check for excess float precision
+# https://gitlab.gnome.org/GNOME/vte/-/issues/2854
+
+if cxx.compiles('''
+    #include <cfloat>
+    static_assert(FLT_EVAL_METHOD == 2, "no excess");
+    int main(void) { return 0; }
+    ''',
+    args: [
+      cxx_std_opt,
+    ],
+    name: 'excess precision check',
+  )
+
+  fexcess_precision_flags = [
+    '-fexcess-precision=fast',
+    '-ffloat-store',
+  ]
+
+  global_cflags += cc.get_supported_arguments(fexcess_precision_flags)
+  global_cxxflags += cxx.get_supported_arguments(fexcess_precision_flags)
+endif
+
 # ... and now make these flags the default
 add_project_arguments(global_cflags, language: 'c')
 add_project_arguments(global_cxxflags, language: 'cpp')
@@ -581,7 +621,7 @@ add_project_arguments(global_cxxflags, language: 'cpp')
 
 linker_flags = [
   ['-Wl,-Bsymbolic', false,],
-  ['-Wl,-Bsymbolic-functions', get_option('_b_symbolic_functions'),],
+  ['-Wl,-Bsymbolic-functions', get_option('_b_symbolic_functions') and have_gnu_ld,],
 
   # See issue vte#2535.
   ['-fstack-protector', false],
@@ -613,6 +653,37 @@ pango_dep         = dependency('pango',      version: '>=' + pango_req_version)
 pcre2_dep         = dependency('libpcre2-8', version: '>=' + pcre2_req_version)
 pthreads_dep      = dependency('threads')
 liblz4_dep        = dependency('liblz4', version: '>=' + liblz4_req_version)
+simdutf_dep       = dependency('simdutf', version: '>=' + simdutf_req_version, required: true)
+
+# fmt dep needs a bit more massaging since we don't know
+# if the system fmt is a shared or static library, and in
+# the latter case if it's compiled with PIC. Since vte
+# doesn't need the library anyway and only uses the headers,
+# let's only use the include directory from the system.
+# See https://gitlab.gnome.org/GNOME/vte/-/issues/2875 .
+fmt_sysdep = dependency(
+  'fmt',
+  version: '>=' + fmt_req_version,
+  allow_fallback: false,
+  required: false
+)
+if fmt_sysdep.found()
+  fmt_dep = declare_dependency(
+    compile_args: [
+      '-DFMT_HEADER_ONLY',
+      '-UFMT_SHARED',
+    ],
+    dependencies:
+      [fmt_sysdep.partial_dependency(
+         includes: true,
+       ),
+      ],
+   )
+else
+  # Override fmt with the subproject
+  subproject('fmt')
+  fmt_dep = dependency('fmt', version: '>=' + fmt_req_version)
+endif
 
 if get_option('fribidi')
   fribidi_dep = dependency('fribidi', version: '>=' + fribidi_req_version)
@@ -652,6 +723,37 @@ endif
 
 config_h.set10('WITH_SYSTEMD', systemd_dep.found())
 
+# Try fast_float.h from system headers, else fall back to subproject
+# Since fast_float doesn't seem to have any defines to check its version,
+# try compiling a test programme to see if the version is new enough.
+
+if cxx.compiles('''
+    #include <cstdint>
+    #include <cstring>
+    #include <fast_float/fast_float.h>
+
+    int main(void) {
+      auto str = "1234";
+      auto start = str;
+      auto end = str + strlen(str);
+      auto value = uint64_t{};
+      auto rv = fast_float::from_chars(start, end, value, 16);
+      if (rv.ec != std::errc{} || rv.ptr != end)
+        return 2;
+
+      return 0;
+    }
+    ''',
+    args: [
+      cxx_std_opt,
+    ],
+    name: 'system fast_float usability check',
+  )
+  fast_float_dep = dependency('', required: false)
+else
+  fast_float_dep = dependency('fast_float', required: true)
+endif
+
 # Write config.h
 
 config_sources = [
@@ -675,6 +777,10 @@ endif
 
 meson.add_dist_script(
   find_program('meson_changelog.sh'),
+)
+
+meson.add_dist_script(
+  find_program('meson_subprojects.sh'),
 )
 
 # Simple compat Makefile

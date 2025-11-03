@@ -20,7 +20,7 @@
  * SECTION: vte-terminal
  * @short_description: A terminal widget implementation
  *
- * A VteTerminal is a terminal emulator implemented as a GTK3 widget.
+ * A VteTerminal is a terminal emulator implemented as a GTK widget.
  *
  * Note that altough #VteTerminal implements the #GtkScrollable interface,
  * you should not place a #VteTerminal inside a #GtkScrolledWindow
@@ -49,7 +49,7 @@
 #include "vte/vteterminal.h"
 #include "vte/vtetypebuiltins.h"
 
-#include "debug.h"
+#include "debug.hh"
 #include "glib-glue.hh"
 #include "gobject-glue.hh"
 #include "marshal.h"
@@ -57,25 +57,33 @@
 #include "vtedefines.hh"
 #include "vteinternal.hh"
 #include "widget.hh"
+#include "color.hh"
 
 #include "vtegtk.hh"
+#include "vtepropertiesinternal.hh"
+#include "termpropsregistry.hh"
 #include "vteptyinternal.hh"
 #include "vteregexinternal.hh"
+#include "vteuuidinternal.hh"
 
 #include <cairo-gobject.h>
 
 #if WITH_A11Y
-#if VTE_GTK == 3
-#include "vteaccess.h"
-#endif /* VTE_GTK == 3 */
+# if VTE_GTK == 3
+#  include "vteaccess.h"
+# elif VTE_GTK == 4
+#  include "vteaccess-gtk4.h"
+# endif
 #endif /* WITH_A11Y */
 
 #if WITH_ICU
 #include "icu-glue.hh"
 #endif
 
+VteProperties const* vte_terminal_get_termprops(VteTerminal* terminal) noexcept;
+
 #define I_(string) (g_intern_static_string(string))
-#define _VTE_PARAM_DEPRECATED (_vte_debug_on(VTE_DEBUG_SIGNALS) ? G_PARAM_DEPRECATED : 0)
+#define _VTE_PARAM_DEPRECATED (vte::debug::check_categories(vte::debug::category::SIGNALS) ? G_PARAM_DEPRECATED : 0)
 
 #define VTE_TERMINAL_CSS_NAME "vte-terminal"
 
@@ -90,6 +98,40 @@
 
 template<typename T>
 constexpr bool check_enum_value(T value) noexcept;
+
+static constinit size_t vte_terminal_class_n_instances = 0;
+
+static inline void
+sanitise_widget_size_request(int* minimum,
+                             int* natural) noexcept
+{
+        // Overly large size requests will make gtk happily allocate
+        // a window size over the window system's limits (see
+        // e.g. https://gitlab.gnome.org/GNOME/vte/-/issues/2786),
+        // leading to aborting the whole process.
+        // The toolkit should be in a better position to know about
+        // these limits and not exceed them (which here is certainly
+        // possible since our minimum sizes are very small), let's
+        // limit the widget's size request to some large value
+        // that hopefully is within the absolute limits of
+        // the window system (assumed here to be int16 range,
+        // and leaving some space for the widgets that contain
+        // the terminal).
+        auto const limit = (1 << 15) - (1 << 12);
+
+        if (*minimum > limit || *natural > limit) {
+                static auto warned = false;
+
+                if (!warned) {
+                        g_warning("Widget size request (minimum %d, natural %d) exceeds limits\n",
+                                  *minimum, *natural);
+                        warned = true;
+                }
+        }
+
+        *minimum = std::min(*minimum, limit);
+        *natural = std::clamp(*natural, *minimum, limit);
+}
 
 struct _VteTerminalClassPrivate {
         GtkStyleProvider *style_provider;
@@ -114,7 +156,10 @@ style_provider_parsing_error_cb(GtkCssProvider* provider,
                                 void* section,
                                 GError* error)
 {
-        g_assert_no_error(error);
+        if (error->domain == GTK_CSS_PARSER_WARNING)
+                g_warning("Warning parsing CSS: %s", error->message);
+        else
+                g_assert_no_error(error);
 }
 
 #endif
@@ -155,7 +200,14 @@ private:
         std::shared_ptr<vte::platform::Widget> m_widget;
 };
 
-#if VTE_DEBUG
+#if WITH_A11Y && VTE_GTK == 4
+# define VTE_IMPLEMENT_ACCESSIBLE \
+  G_IMPLEMENT_INTERFACE(GTK_TYPE_ACCESSIBLE_TEXT, \
+                        _vte_accessible_text_iface_init)
+#else
+# define VTE_IMPLEMENT_ACCESSIBLE
+#endif
+
 G_DEFINE_TYPE_WITH_CODE(VteTerminal, vte_terminal, GTK_TYPE_WIDGET,
                         {
                                 VteTerminal_private_offset =
@@ -163,18 +215,7 @@ G_DEFINE_TYPE_WITH_CODE(VteTerminal, vte_terminal, GTK_TYPE_WIDGET,
                         }
                         g_type_add_class_private (g_define_type_id, sizeof (VteTerminalClassPrivate));
                         G_IMPLEMENT_INTERFACE(GTK_TYPE_SCROLLABLE, nullptr)
-                        if (_vte_debug_on(VTE_DEBUG_LIFECYCLE)) {
-                                g_printerr("vte_terminal_get_type()\n");
-                        })
-#else
-G_DEFINE_TYPE_WITH_CODE(VteTerminal, vte_terminal, GTK_TYPE_WIDGET,
-                        {
-                                VteTerminal_private_offset =
-                                        g_type_add_instance_private(g_define_type_id, sizeof(VteTerminalPrivate));
-                        }
-                        g_type_add_class_private (g_define_type_id, sizeof (VteTerminalClassPrivate));
-                        G_IMPLEMENT_INTERFACE(GTK_TYPE_SCROLLABLE, nullptr))
-#endif
+                        VTE_IMPLEMENT_ACCESSIBLE)
 
 static inline auto
 get_private(VteTerminal* terminal)
@@ -305,6 +346,35 @@ try
 catch (...)
 {
         vte::log_exception();
+}
+
+static gboolean
+vte_terminal_real_termprops_changed(VteTerminal *terminal,
+                                    int const* props,
+                                    int n_props) noexcept
+try
+{
+        auto const registry = vte_get_termprops_registry();
+
+        for (auto i = 0; i < n_props; ++i) {
+                auto const quark = _vte_properties_registry_get_quark_by_id(registry,
+                                                                            props[i]);
+                if (!quark)
+                        continue;
+
+                g_signal_emit(terminal,
+                              signals[SIGNAL_TERMPROP_CHANGED],
+                              quark, // detail
+                              g_quark_to_string(quark));
+
+        }
+
+        return true;
+}
+catch (...)
+{
+        vte::log_exception();
+        return false;
 }
 
 #if VTE_GTK == 3
@@ -507,6 +577,7 @@ try
 {
 	VteTerminal *terminal = VTE_TERMINAL(widget);
         WIDGET(terminal)->get_preferred_width(minimum_width, natural_width);
+        sanitise_widget_size_request(minimum_width, natural_width);
 }
 catch (...)
 {
@@ -521,6 +592,7 @@ try
 {
 	VteTerminal *terminal = VTE_TERMINAL(widget);
         WIDGET(terminal)->get_preferred_height(minimum_height, natural_height);
+        sanitise_widget_size_request(minimum_height, natural_height);
 }
 catch (...)
 {
@@ -533,8 +605,6 @@ static void
 vte_terminal_realize(GtkWidget *widget) noexcept
 try
 {
-	_vte_debug_print(VTE_DEBUG_LIFECYCLE, "vte_terminal_realize()\n");
-
         GTK_WIDGET_CLASS(vte_terminal_parent_class)->realize(widget);
 
         VteTerminal *terminal= VTE_TERMINAL(widget);
@@ -548,8 +618,6 @@ catch (...)
 static void
 vte_terminal_unrealize(GtkWidget *widget) noexcept
 {
-	_vte_debug_print(VTE_DEBUG_LIFECYCLE, "vte_terminal_unrealize()\n");
-
         try {
                 VteTerminal *terminal = VTE_TERMINAL (widget);
                 WIDGET(terminal)->unrealize();
@@ -564,8 +632,6 @@ static void
 vte_terminal_map(GtkWidget *widget) noexcept
 try
 {
-        _vte_debug_print(VTE_DEBUG_LIFECYCLE, "vte_terminal_map()\n");
-
         VteTerminal *terminal = VTE_TERMINAL(widget);
         GTK_WIDGET_CLASS(vte_terminal_parent_class)->map(widget);
 
@@ -579,8 +645,6 @@ catch (...)
 static void
 vte_terminal_unmap(GtkWidget *widget) noexcept
 {
-        _vte_debug_print(VTE_DEBUG_LIFECYCLE, "vte_terminal_unmap()\n");
-
         try {
                 VteTerminal *terminal = VTE_TERMINAL(widget);
                 WIDGET(terminal)->unmap();
@@ -756,8 +820,6 @@ catch (...)
 static void
 vte_terminal_unroot(GtkWidget *widget) noexcept
 {
-        _vte_debug_print(VTE_DEBUG_LIFECYCLE, "vte_terminal_unroot()\n");
-
         auto terminal = VTE_TERMINAL(widget);
         WIDGET(terminal)->unroot();
 
@@ -778,6 +840,7 @@ try
         WIDGET(terminal)->measure(orientation, for_size,
                                   minimum, natural,
                                   minimum_baseline, natural_baseline);
+        sanitise_widget_size_request(minimum, natural);
 }
 catch (...)
 {
@@ -872,11 +935,15 @@ static void
 vte_terminal_constructed (GObject *object) noexcept
 try
 {
-        VteTerminal *terminal = VTE_TERMINAL (object);
-
         G_OBJECT_CLASS (vte_terminal_parent_class)->constructed (object);
 
+        auto const terminal = VTE_TERMINAL(object);
+
         WIDGET(terminal)->constructed();
+
+#if WITH_A11Y && VTE_GTK == 4
+        _vte_accessible_text_init(GTK_ACCESSIBLE_TEXT(terminal));
+#endif
 }
 catch (...)
 {
@@ -887,10 +954,10 @@ static void
 vte_terminal_init(VteTerminal *terminal)
 try
 {
+        ++vte_terminal_class_n_instances;
+
         void *place;
 	GtkStyleContext *context;
-
-	_vte_debug_print(VTE_DEBUG_LIFECYCLE, "vte_terminal_init()\n");
 
         context = gtk_widget_get_style_context(&terminal->widget);
         gtk_style_context_add_provider (context,
@@ -916,8 +983,6 @@ catch (...)
 static void
 vte_terminal_dispose(GObject *object) noexcept
 {
-	_vte_debug_print(VTE_DEBUG_LIFECYCLE, "vte_terminal_dispose()\n");
-
         try {
                 VteTerminal *terminal = VTE_TERMINAL (object);
                 PRIVATE(terminal)->reset();
@@ -932,13 +997,13 @@ vte_terminal_dispose(GObject *object) noexcept
 static void
 vte_terminal_finalize(GObject *object) noexcept
 {
-	_vte_debug_print(VTE_DEBUG_LIFECYCLE, "vte_terminal_finalize()\n");
-
         auto terminal = VTE_TERMINAL(object);
         PRIVATE(terminal)->~VteTerminalPrivate();
 
 	/* Call the inherited finalize() method. */
 	G_OBJECT_CLASS(vte_terminal_parent_class)->finalize(object);
+
+        --vte_terminal_class_n_instances;
 }
 
 static void
@@ -1011,11 +1076,17 @@ try
                 case PROP_DELETE_BINDING:
                         g_value_set_enum (value, widget->delete_binding());
                         break;
+                case PROP_ENABLE_A11Y:
+                        g_value_set_boolean (value, vte_terminal_get_enable_a11y (terminal));
+                        break;
                 case PROP_ENABLE_BIDI:
                         g_value_set_boolean (value, vte_terminal_get_enable_bidi (terminal));
                         break;
                 case PROP_ENABLE_FALLBACK_SCROLLING:
                         g_value_set_boolean (value, vte_terminal_get_enable_fallback_scrolling(terminal));
+                        break;
+                case PROP_ENABLE_LEGACY_OSC777:
+                        g_value_set_boolean(value, vte_terminal_get_enable_legacy_osc777(terminal));
                         break;
                 case PROP_ENABLE_SHAPING:
                         g_value_set_boolean (value, vte_terminal_get_enable_shaping (terminal));
@@ -1093,7 +1164,6 @@ try
                 case PROP_YFILL:
                         g_value_set_boolean(value, vte_terminal_get_yfill(terminal));
                         break;
-
                 default:
 			G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 			return;
@@ -1166,11 +1236,17 @@ try
                 case PROP_DELETE_BINDING:
                         vte_terminal_set_delete_binding (terminal, (VteEraseBinding)g_value_get_enum (value));
                         break;
+                case PROP_ENABLE_A11Y:
+                        vte_terminal_set_enable_a11y (terminal, g_value_get_boolean (value));
+                        break;
                 case PROP_ENABLE_BIDI:
                         vte_terminal_set_enable_bidi (terminal, g_value_get_boolean (value));
                         break;
                 case PROP_ENABLE_FALLBACK_SCROLLING:
                         vte_terminal_set_enable_fallback_scrolling (terminal, g_value_get_boolean (value));
+                        break;
+                case PROP_ENABLE_LEGACY_OSC777:
+                        vte_terminal_set_enable_legacy_osc777(terminal, g_value_get_boolean(value));
                         break;
                 case PROP_ENABLE_SHAPING:
                         vte_terminal_set_enable_shaping (terminal, g_value_get_boolean (value));
@@ -1263,31 +1339,10 @@ catch (...)
 static void
 vte_terminal_class_init(VteTerminalClass *klass)
 {
-#if VTE_DEBUG
-	{
-                _vte_debug_init();
-		_vte_debug_print(VTE_DEBUG_LIFECYCLE,
-                                 "vte_terminal_class_init()\n");
-		/* print out the legend */
-		_vte_debug_print(VTE_DEBUG_WORK,
-                                 "Debugging work flow (top input to bottom output):\n"
-                                 "  .  _vte_terminal_process_incoming\n"
-                                 "  <  start process_timeout\n"
-                                 "  {[ start update_timeout  [ => rate limited\n"
-                                 "  T  start of terminal in update_timeout\n"
-                                 "  (  start _vte_terminal_process_incoming\n"
-                                 "  ?  _vte_invalidate_cells (call)\n"
-                                 "  !  _vte_invalidate_cells (dirty)\n"
-                                 "  *  _vte_invalidate_all\n"
-                                 "  )  end _vte_terminal_process_incoming\n"
-                                 "  =  vte_terminal_paint\n"
-                                 "  ]} end update_timeout\n"
-                                 "  >  end process_timeout\n");
-	}
-#endif
+        _vte_debug_init();
 
 #if VTE_GTK == 3
-	_VTE_DEBUG_IF (VTE_DEBUG_UPDATES) gdk_window_set_debug_updates(TRUE);
+	_VTE_DEBUG_IF (vte::debug::category::UPDATES) gdk_window_set_debug_updates(TRUE);
 #endif
 
 	bindtextdomain(GETTEXT_PACKAGE, LOCALEDIR);
@@ -1383,6 +1438,9 @@ vte_terminal_class_init(VteTerminalClass *klass)
 
         klass->bell = NULL;
 
+        klass->termprops_changed = vte_terminal_real_termprops_changed;
+        klass->termprop_changed = nullptr;
+
         /* GtkScrollable interface properties */
         g_object_class_override_property (gobject_class, PROP_HADJUSTMENT, "hadjustment");
         g_object_class_override_property (gobject_class, PROP_VADJUSTMENT, "vadjustment");
@@ -1439,11 +1497,15 @@ vte_terminal_class_init(VteTerminalClass *klass)
          * @vteterminal: the object which received the signal
          *
          * Emitted when the #VteTerminal:window-title property is modified.
+         *
+         * Deprecated: 0.78: Use the #VteTerminal:termprop-changed signal
+         *   for the %VTE_TERMPROP_XTERM_TITLE termprop.
          */
         signals[SIGNAL_WINDOW_TITLE_CHANGED] =
                 g_signal_new(I_("window-title-changed"),
                              G_OBJECT_CLASS_TYPE(klass),
-                             G_SIGNAL_RUN_LAST,
+                             GSignalFlags(G_SIGNAL_RUN_LAST |
+                                          G_SIGNAL_DEPRECATED),
                              G_STRUCT_OFFSET(VteTerminalClass, window_title_changed),
                              NULL,
                              NULL,
@@ -1477,11 +1539,15 @@ vte_terminal_class_init(VteTerminalClass *klass)
          * @vteterminal: the object which received the signal
          *
          * Emitted when the current directory URI is modified.
+         *
+         * Deprecated: 0.78: Use the #VteTerminal:termprop-changed signal
+         *   for the %VTE_TERMPROP_CURRENT_DIRECTORY_URI termprop.
          */
         signals[SIGNAL_CURRENT_DIRECTORY_URI_CHANGED] =
                 g_signal_new(I_("current-directory-uri-changed"),
                              G_OBJECT_CLASS_TYPE(klass),
-                             G_SIGNAL_RUN_LAST,
+                             GSignalFlags(G_SIGNAL_RUN_LAST |
+                                          G_SIGNAL_DEPRECATED),
                              0,
                              NULL,
                              NULL,
@@ -1496,11 +1562,15 @@ vte_terminal_class_init(VteTerminalClass *klass)
          * @vteterminal: the object which received the signal
          *
          * Emitted when the current file URI is modified.
+         *
+         * Deprecated: 0.78: Use the #VteTerminal:termprop-changed signal
+         *   for the %VTE_TERMPROP_CURRENT_FILE_URI termprop.
          */
         signals[SIGNAL_CURRENT_FILE_URI_CHANGED] =
                 g_signal_new(I_("current-file-uri-changed"),
                              G_OBJECT_CLASS_TYPE(klass),
-                             G_SIGNAL_RUN_LAST,
+                             GSignalFlags(G_SIGNAL_RUN_LAST |
+                                          G_SIGNAL_DEPRECATED),
                              0,
                              NULL,
                              NULL,
@@ -2002,6 +2072,86 @@ vte_terminal_class_init(VteTerminalClass *klass)
                                    g_cclosure_marshal_VOID__VOIDv);
 
         /**
+         * VteTerminal::termprop-changed:
+         * @vteterminal: the object which received the signal
+         * @name: the name of the changed property
+         *
+         * The "termprop-changed" signal is emitted when a termprop
+         * has changed or been reset.
+         *
+         * The handler may use the vte_terminal_get_termprop_*()
+         * functions (and their by-ID variants), to retrieve the value of
+         * any termprop (not just @name); but it must *not* call *any*
+         * other API on @terminal, including API of its parent classes.
+         *
+         * This signal supports detailed connections, so e.g. subscribing
+         * to "termprop-changed::name" only runs the callback when the
+         * termprop "name" has changed.
+         *
+         * Since: 0.78
+         */
+        signals[SIGNAL_TERMPROP_CHANGED] =
+                g_signal_new(I_("termprop-changed"),
+                             G_OBJECT_CLASS_TYPE(klass),
+                             GSignalFlags(G_SIGNAL_RUN_LAST |
+                                          G_SIGNAL_DETAILED),
+                             G_STRUCT_OFFSET(VteTerminalClass, termprop_changed),
+                             nullptr,
+                             nullptr,
+                             g_cclosure_marshal_VOID__STRING,
+                             G_TYPE_NONE,
+                             1,
+                             G_TYPE_STRING | G_SIGNAL_TYPE_STATIC_SCOPE);
+        g_signal_set_va_marshaller(signals[SIGNAL_TERMPROP_CHANGED],
+                                   G_OBJECT_CLASS_TYPE(klass),
+                                   g_cclosure_marshal_VOID__STRINGv);
+
+        /**
+         * VteTerminal::termprops-changed:
+         * @vteterminal: the object which received the signal
+         * @props: (array length=n_props) (element-type int): an array of termprop IDs
+         * @n_props: the length of the @keys array
+         *
+         * Emitted when termprops have changed. @props is an array containing
+         * the IDs of the terminal properties that may have changed since
+         * the last emission of this signal, in an undefined order.
+         * Note that emission of this signal is delayed from the receipt of the
+         * OSC sequences, and a termprop may have been changed more than once
+         * inbetween signal emissions, but only the value set last is retrievable.
+         *
+         * The default handler for this signal emits the "termprop-changed"
+         * signal for each changed property. Returning %TRUE from a handler
+         * running before the default will prevent this.
+         *
+         * The handler may use the vte_terminal_get_termprop_*()
+         * functions (and their by-ID variants), to retrieve the value of
+         * any termprop, as well as call vte_terminal_reset_termprop()
+         * (and its by-ID variant) to reset any termprop, or emit the
+         * VteTerminal::termprop-changed signal; but it must *not*
+         * call *any* other API on @terminal, including API of its parent classes.
+         *
+         * Returns: %TRUE to stop further handlers being invoked for this signal,
+         *   or %FALSE to continue signal emission
+         *
+         * Since: 0.78
+         */
+        signals[SIGNAL_TERMPROPS_CHANGED] =
+                g_signal_new(I_("termprops-changed"),
+                             G_OBJECT_CLASS_TYPE(klass),
+                             G_SIGNAL_RUN_LAST,
+                             G_STRUCT_OFFSET(VteTerminalClass, termprops_changed),
+                             g_signal_accumulator_true_handled,
+                             nullptr,
+                             _vte_marshal_BOOLEAN__POINTER_INT,
+                             G_TYPE_BOOLEAN,
+                             2,
+                             G_TYPE_POINTER,
+                             G_TYPE_INT);
+        g_signal_set_va_marshaller(signals[SIGNAL_TERMPROPS_CHANGED],
+                                   G_OBJECT_CLASS_TYPE(klass),
+                                   _vte_marshal_BOOLEAN__POINTER_INTv);
+
+        /**
          * VteTerminal::bell:
          * @vteterminal: the object which received the signal
          *
@@ -2030,7 +2180,8 @@ vte_terminal_class_init(VteTerminalClass *klass)
          * The handler may set either a menu model using
          * vte_terminal_set_context_menu_model(), or a menu using
          * vte_terminal_set_context_menu(), which will then be used as context
-         * menu.
+         * menu, or keep a previously set context menu or context menu model,
+         * but update the menu and/or its #GAction:s visibility and sensitivity.
          * If neither a menu model nor a menu are set, a context menu
          * will not be shown.
          *
@@ -2225,6 +2376,18 @@ vte_terminal_class_init(VteTerminalClass *klass)
                                    VTE_TYPE_ERASE_BINDING,
                                    VTE_ERASE_AUTO,
                                    (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+
+        /**
+         * VteTerminal:enable-a11y:
+         *
+         * Controls whether or not a11y is enabled for the widget.
+         *
+         * Since: 0.78
+         */
+        pspecs[PROP_ENABLE_A11Y] =
+                g_param_spec_boolean ("enable-a11y", NULL, NULL,
+                                      true,
+                                      (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
 
         /**
          * VteTerminal:enable-bidi:
@@ -2481,31 +2644,37 @@ vte_terminal_class_init(VteTerminalClass *klass)
          * VteTerminal:window-title:
          *
          * The terminal's title.
+         *
+         * Deprecated: 0.78: Use the %VTE_TERMPROP_XTERM_TITLE termprop.
          */
         pspecs[PROP_WINDOW_TITLE] =
                 g_param_spec_string ("window-title", NULL, NULL,
                                      NULL,
-                                     (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+                                     (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY | G_PARAM_DEPRECATED));
 
         /**
          * VteTerminal:current-directory-uri:
          *
          * The current directory URI, or %NULL if unset.
+         *
+         * Deprecated: 0.78: Use the %VTE_TERMPROP_CURRENT_DIRECTORY_URI termprop.
          */
         pspecs[PROP_CURRENT_DIRECTORY_URI] =
                 g_param_spec_string ("current-directory-uri", NULL, NULL,
                                      NULL,
-                                     (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+                                     (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY | G_PARAM_DEPRECATED));
 
         /**
          * VteTerminal:current-file-uri:
          *
          * The current file URI, or %NULL if unset.
+         *
+         * Deprecated: 0.78: Use the %VTE_TERMPROP_CURRENT_FILE_URI termprop.
          */
         pspecs[PROP_CURRENT_FILE_URI] =
                 g_param_spec_string ("current-file-uri", NULL, NULL,
                                      NULL,
-                                     (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+                                     (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY | G_PARAM_DEPRECATED));
 
         /**
          * VteTerminal:hyperlink-hover-uri:
@@ -2588,6 +2757,19 @@ vte_terminal_class_init(VteTerminalClass *klass)
                                      TRUE,
                                      GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
 
+        /**
+         * VteTerminal:enable-legacy-osc777:
+         *
+         * Whether legacy OSC 777 sequences are translated to
+         * their corresponding termprops.
+         *
+         * Since: 0.78
+         */
+        pspecs[PROP_ENABLE_LEGACY_OSC777] =
+                g_param_spec_boolean("enable-legacy-osc777", nullptr, nullptr,
+                                     false,
+                                     GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
+
         g_object_class_install_properties(gobject_class, LAST_PROP, pspecs);
 
 #if VTE_GTK == 3
@@ -2631,15 +2813,369 @@ vte_terminal_class_init(VteTerminalClass *klass)
         err.assert_no_error();
 #endif
 
-#if VTE_GTK == 3
 #if WITH_A11Y
+#if VTE_GTK == 3
         /* a11y */
         gtk_widget_class_set_accessible_type(widget_class, VTE_TYPE_TERMINAL_ACCESSIBLE);
+#elif VTE_GTK == 4
+        gtk_widget_class_set_accessible_role(widget_class, GTK_ACCESSIBLE_ROLE_TERMINAL);
 #endif
 #endif
 }
 
 /* public API */
+
+/**
+ * SECTION: Terminal properties
+ * @short_description:
+ *
+ * A terminal property ("termprop") is a variable in #VteTerminal.  It can be
+ * assigned a value (or no value) via an OSC sequence; and the value can
+ * be observed by the application embedding the #VteTerminal.
+ *
+ * When a termprop value changes, a change notification is delivered
+ * asynchronously to the #VteTerminal via the #VteTerminal:termprops-changed
+ * signal, which will receive the IDs of the termprops that were changed since
+ * the last emission of the signal.  Its default handler will emit the
+ * #VteTerminal:termprop-changed detailed signal for each changed property
+ * separately.  Note that since the emission of these signals is delayed
+ * to an unspecified time after the change, when changing a termprop multiple
+ * times in succession, only the last change may be visible to the
+ * #VteTerminal, with intermediate value changes being unobservable.
+ * However, a call to one of the vte_terminal_get_termprop*() functions
+ * will always deliver the current value, even if no change notification
+ * for it has been dispatched yet.
+ *
+ * Also note that when setting the value of a termprop to the same value it
+ * already had, or resetting a termprop that already had no value, vte tries
+ * to avoid emitting an unnecessary change notification for that termprop;
+ * however that is not an API guarantee.
+ *
+ * All change notifications for termprops changed from a single OSC sequence
+ * are emitted at the same time; notifications for termprop changes from
+ * a series of OSC sequences may or may not be emitted at the same time.
+ *
+ * An termprop installed with the %VTE_PROPERTY_FLAG_EPHEMERAL is called an
+ * ephemeral termprop. Ephemeral termprops can be set and reset using the
+ * same OSC sequences as other termprops; the only difference is that their
+ * values can only be observed during the emission of the
+ * #VteTerminal:termprops-changed and #VteTerminal:termprop-changed signals
+ * that follow them changing their value, and their values will be reset
+ * after the signal emission.
+ *
+ * The OSC sequence to change termprop values has the following syntax:
+ * ```
+ * OSC              = INTRODUCER, CONTROL_STRING, ST;
+ * INTRODUCER       = ( U+001B, U+005D ) | U+009D;
+ * ST               = ( U+001B, U+005C ) | U+009C;
+ * CONTROL_STRING   = SELECTOR, { ";", STATEMENT };
+ * SELECTOR         = "666";
+ * STATEMENT        = SET_STATEMENT | RESET_STATEMENT | SIGNAL_STATEMENT | QUERY_STATEMENT;
+ * SET_STATEMENT    = KEY, "=", VALUE;
+ * QUERY_STATEMENT  = KEY, "?";
+ * SIGNAL_STATEMENT = KEY, "!";
+ * RESET_STATEMENT  = KEY | KEY, ".";
+ * ```
+ *
+ * Note that there is a limit on the total length of the `CONTROL_STRING` of 4096
+ * unicode codepoints between the `INTRODUCER` and the `ST`, excluding both.
+ *
+ * A `SET_STATEMENT` consists of the name of a termprop, followed by an equal
+ * sign ('=') and the new value of the termprop.  The syntax of the value
+ * depends on the type of the termprop; if the value is not valid for the type,
+ * the set-statement behaves identical to a reset-statement.  If the name does not
+ * refer to a registered termprop, the set-statement is ignored.
+ *
+ * A `RESET_STATEMENT` consists of just the name of the termprop, or a prefix
+ * of termprop names ending with a '.'. When given the name of a registered termprop,
+ * it will reset the termprop to having no value set.  If the name does not refer to
+ * a registered termprop, the reset-statement is ignored. Since 0.80, it may also be
+ * given a prefix of termprop names ending with a '.', which resets all registered
+ * termprops whose name starts with the given prefix.
+ *
+ * A `SIGNAL_STATEMENT` consists of the name of a valueless termprop, followed by
+ * an exclamation mark ('!').  If the name does not refer to a registered termprop,
+ * or to a termprop that is not valueless, the signal-statement is ignored.
+ * See below for more information about valueless termprops.
+ *
+ * A `QUERY_STATEMENT` consists of the name of a termprop, followed by a question
+ * mark ('?').  This will cause the terminal to respond with one or more OSC sequences
+ * using the same syntax as above, that may each contain none or more statements,
+ * for none or some of termprops being queried.  If the queried termprop has a value,
+ * there may be a set-statement for that termprop and that value; if the termprop
+ * has no value, there may be a reset-statement for that termprop.
+ * Note that this is reserved for future extension; currently, for security reasons,
+ * the terminal will respond with exactly one such OSC sequence containing zero
+ * statements.  If the name does not refer to a registered termprop, there
+ * nevertheless will be an OSC response.
+ *
+ * Termprop names (`KEY`) must follow this syntax:
+ * ```
+ * KEY            = KEY_COMPONENT, { ".", KEY_COMPONENT };
+ * KEY_COMPONENT  = KEY_IDENTIFIER, { "-", KEY_IDENTIFIER };
+ * KEY_IDENTIFIER = LETTER, { LETTER }, [ DIGIT, { DIGIT } ];
+ * LETTER         = "a" | ... | "z";
+ * DIGIT          = "0" | ... | "9";
+ * ```
+ *
+ * Or in words, the key must consist of two or more components, each of which
+ * consists of a sequence of one or more identifier separated with a dash ('-'),
+ * each identifier starting with a lowercase letter followed by zero or more
+ * lowercase letters 'a' ... 'z', followed by zero or more digits '0' ... '9'.
+ *
+ * There are multiple types of termprops supported.
+ *
+ * * A termprop of type %VTE_PROPERTY_VALUELESS has no value, and its use
+ *   is solely for the side-effect of emitting the change signal. It may be
+ *   raised (that is, cause the change signal to be emitted) by using
+ *   a signal-statement as detailed above, and unraised (that is, cancel
+ *   a pending change signal emission for it) by using a reset-statement.
+ *   A set-statement has no effect for this property type.
+ *
+ * * A termprop of type %VTE_PROPERTY_BOOL is a boolean property, and
+ *   takes the strings "0", "false", "False", and "FALSE" to denote the %FALSE
+ *   value, and "1", "true", "True", and "TRUE" to denote the %TRUE value.
+ *
+ * * A termprop of type %VTE_PROPERTY_INT is an 64-bit signed integer,
+ *   and takes a string of digits and an optional leading minus sign, that,
+ *   when converted to a number must be between -9223372036854775808 and
+ *   9223372036854775807.
+ *
+ * * A termprop of type %VTE_PROPERTY_UINT is a 64-bit unsigned integer,
+ *   and takes a string of digits that, when converted to a number, must be
+ *   between 0 and 18446744073709551615.
+ *
+ * * A termprop of type %VTE_PROPERTY_DOUBLE is a finite double-precision
+ *   floating-point number, and takes a string specifying the floating-point
+ *   number in fixed or scientific format, with no leading or trailing
+ *   whitespace.
+ *
+ * * A termprop of type %VTE_PROPERTY_RGBA or %VTE_PROPERTY_RGBA is a color,
+ *   and takes a string in the CSS color format, accepting colors in either
+ *   hex format, rgb, rgba, hsl, or hsla format, or a named color.  Termprops
+ *   of type %VTE_PROPERTY_RGB will always have an alpha value of 1.0, while
+ *   termprops of type %VTE_PROPERTY_RGBA will have the alpha value as specified
+ *   in the set-statement.  See the CSS spec and man:XParseColor(3) for more
+ *   information on the syntax of the termprop value.
+ *
+ * * A termprop of type %VTE_PROPERTY_STRING is a string.
+ *   Note that due to the OSC syntax, the value string must not contain
+ *   semicolons (';') nor any C0 or C1 control characters.  Instead, escape
+ *   sequences '\s' for semicolon, and '\n' for LF are provided; and therefore
+ *   backslashes need to be escaped too, using '\\'.
+ *   The maximum size after unescaping is 1024 unicode codepoints.
+ *
+ * * A termprop of type %VTE_PROPERTY_DATA is binary data, and takes
+ *   a string that is base64-encoded in the default alphabet as per RFC 4648.
+ *   The maximum size of the data after base64 decoding is 2048 bytes.
+ *
+ * * A termprop of type %VTE_PROPERTY_UUID is a UUID, and takes a
+ *   string representation of an UUID in simple, braced, or URN form.
+ *   See RFC 4122 for more information.
+ *
+ * * A termprop of type %VTE_PROPERTY_URI is a URI, and takes a
+ *   string representation of an URI. See the #GUri documentation
+ *   for more information.
+ *   Note that due to the OSC syntax, the value string must not contain
+ *   semicolons (';') nor any C0 or C1 control characters.  Instead,
+ *   use percent-encoding.  Also, any non-UTF-8 characters must be
+ *   percent-encoded as well. However, the data after percent-decoding
+ *   is not required to be UTF-8.
+ *   Note that data: URIs are not permitted; use a %VTE_PROPERTY_DATA
+ *   termprop instead.
+ *   The maximum size of an URI is limited only by the length limit of
+ *   the OSC control string.
+ *   Note that currently termprops of this type cannot be created
+ *   via the API, and not set via OSC 666; only built-in termprops of this
+ *   type are available and can only be set via their own special
+ *   OSC numbers.
+ *
+ * * A termprop of type %VTE_PROPERTY_IMAGE is an image.
+ *   Note that currently termprops of this type cannot be created
+ *   via the API, and not set, but can be reset, via OSC 666, only
+ *   built-in termprops of this type are available, and they can
+ *   only be set via their own special sequence. Since: 0.80
+ *
+ * Note that any values any termprop has must be treated as *untrusted*.
+ *
+ * Note that %VTE_PROPERTY_STRING, %VTE_PROPERTY_DATA, and
+ * %VTE_PROPERTY_URI types are not intended to transfer arbitrary binary
+ * data, and may not be used to either transfer image data, file upload of
+ * arbitrary file data, clipboard data, as a general free-form protocol,
+ * or for textual user notifications.  Also you must never feed the data
+ * received, or any derivation thereof, back to the terminal, in full or
+ * in part. Also note that %VTE_TERMPROP_STRING and %VTE_TERMPROP_DATA
+ * termprops must not to be used when the data fits one of the other
+ * termprop types (e.g. a string termprop may not be used for a number).
+ *
+ * If you do perform any further parsing on the contents of a termprop value,
+ * you must do so in the strictest way possible, and treat any errors by
+ * performing the same action as if the termprop had been reset to having
+ * no value at all.
+ *
+ * Note also that when the terminal is reset (by RIS, DECSTR, or DECSR) all
+ * termprops are reset to having no value.
+ *
+ * It is a programming error to call any of the vte_terminal_*_termprop*()
+ * functions for a termprop that is not of the type specified by the function
+ * name.  However, is permissible to call these functions for a name that
+ * is not a registered termprop, in which case they will return the same
+ * as if a termprop of that name existed but had no value.
+ *
+ * Since: 0.78
+ */
+
+/**
+ * vte_install_termprop:
+ * @name: a namespaced property name
+ * @type: a #VtePropertyType to use for the property
+ * @flags: flags from #VtePropertyFlags
+ *
+ * Installs a new terminal property that can be set by the application.
+ *
+ * @name must follow the rules for termprop names as laid out above; it
+ * must have at least 4 components, the first two of which must be "vte",
+ * and "ext". Use the %VTE_TERMPROP_NAME_PREFIX macro which defines this
+ * name prefix.
+ *
+ * You should use an identifier for your terminal as the first component
+ * after the prefix, as a namespace marker.
+ *
+ * It is a programming error to call this function with a @name that does
+ * not meet these requirements.
+ *
+ * It is a programming error to call this function after any #VteTerminal
+ * instances have been created.
+ *
+ * It is a programming error to call this function if the named termprop
+ * is already installed with a different type or flags.
+ *
+ * Returns: an ID for the termprop
+ *
+ * Since: 0.78
+ */
+int
+vte_install_termprop(char const* name,
+                     VtePropertyType type,
+                     VtePropertyFlags flags) noexcept
+{
+        g_return_val_if_fail(name, -1);
+
+        // Cannot install more termprops after a VteTerminal instance has been created.
+        g_return_val_if_fail(vte_terminal_class_n_instances == 0, -1);
+
+        return _vte_properties_registry_install(_vte_get_termprops_registry(),
+                                                g_intern_string(name),
+                                                type,
+                                                flags);
+}
+
+/**
+ * vte_install_termprop_alias:
+ * @name: a namespaced property name
+ * @target_name: the target property name
+ *
+ * Installs a new terminal property @name as an alias for the terminal
+ * property @target_name.
+ *
+ * Returns: the ID for the termprop @target_name
+ *
+ * Since: 0.78
+ */
+int
+vte_install_termprop_alias(char const* name,
+                           char const* target_name) noexcept
+{
+        // Cannot install more termprops after a VteTerminal instance has been created.
+        g_return_val_if_fail(vte_terminal_class_n_instances == 0, -1);
+
+        return _vte_properties_registry_install_alias(_vte_get_termprops_registry(),
+                                                      name,
+                                                      target_name);
+}
+
+/**
+ * vte_get_termprops:
+ * @length: (out) (optional): a location to store the length of the returned array
+ *
+ * Gets the names of the installed termprops in an unspecified order.
+ *
+ * Returns: (transfer container) (array length=length) (nullable): the names of the installed
+ *   termprops, or %NULL if there are no termprops
+ *
+ * Since: 0.78
+ */
+char const**
+vte_get_termprops(gsize* length) noexcept
+{
+        return vte_properties_registry_get_properties(vte_get_termprops_registry(),
+                                                      length);
+}
+
+/**
+ * vte_query_termprop:
+ * @name: a termprop name
+ * @resolved_name: (out) (optional) (transfer none): a location to store the termprop's name
+ * @prop: (out) (optional): a location to store the termprop's ID
+ * @type: (out) (optional): a location to store the termprop's type as a #VtePropertyType
+ * @flags: (out) (optional): a location to store the termprop's flags as a #VtePropertyFlags
+ *
+ * Gets the property type of the termprop. For properties installed by
+ * vte_install_termprop(), the name starts with "vte.ext.".
+ *
+ * For an alias termprop (see vte_install_termprop_alias()), @resolved_name
+ * will be name of the alias' target termprop; otherwise it will be @name.
+ *
+ * Returns: %TRUE iff the termprop exists, and then @prop, @type and
+ *   @flags will be filled in
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_query_termprop(char const* name,
+                   char const** resolved_name,
+                   int* prop,
+                   VtePropertyType* type,
+                   VtePropertyFlags* flags) noexcept
+{
+        return vte_properties_registry_query(vte_get_termprops_registry(),
+                                             name,
+                                             resolved_name,
+                                             prop,
+                                             type,
+                                             flags);
+}
+
+/**
+ * vte_query_termprop_by_id:
+ * @prop: a termprop ID
+ * @name: (out) (optional) (transfer none): a location to store the termprop's name
+ * @type: (out) (optional): a location to store the termprop's type as a #VtePropertyType
+ * @flags: (out) (optional): a location to store the termprop's flags as a #VtePropertyFlags
+ *
+ * Like vte_query_termprop() except that it takes the termprop by ID.
+ * See that function for more information.
+ *
+ * For an alias termprop (see vte_install_termprop_alias()), @resolved_name
+ * will be name of the alias' target termprop; otherwise it will be @name.
+ *
+ * Returns: %TRUE iff the termprop exists, and then @name, @type and
+ *   @flags will be filled in
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_query_termprop_by_id(int prop,
+                         char const** name,
+                         VtePropertyType* type,
+                         VtePropertyFlags* flags) noexcept
+{
+        return vte_properties_registry_query_by_id(vte_get_termprops_registry(),
+                                                   prop,
+                                                   name,
+                                                   type,
+                                                   flags);
+}
 
 /**
  * vte_get_features:
@@ -2802,6 +3338,26 @@ vte_set_test_flags(guint64 flags) noexcept
 }
 
 /**
+ * vte_get_test_flags: (skip)
+ *
+ * Gets the test flags; see vte_set_test_flags() for more information.
+ * Note that on non-debug builds, this always returns 0.
+ *
+ * Returns: the test flags
+ *
+ * Since: 0.78
+ */
+guint64
+vte_get_test_flags(void) noexcept
+{
+#if VTE_DEBUG
+        return g_test_flags;
+#else
+        return 0;
+#endif
+}
+
+/**
  * vte_get_encodings:
  * @include_aliases: whether to include alias names
  *
@@ -2953,7 +3509,7 @@ vte_terminal_copy_primary(VteTerminal *terminal) noexcept
 try
 {
 	g_return_if_fail(VTE_IS_TERMINAL(terminal));
-	_vte_debug_print(VTE_DEBUG_SELECTION, "Copying to PRIMARY.\n");
+	_vte_debug_print(vte::debug::category::SELECTION, "Copying to PRIMARY");
 	WIDGET(terminal)->copy(vte::platform::ClipboardType::PRIMARY,
                                vte::platform::ClipboardFormat::TEXT);
 }
@@ -3023,7 +3579,7 @@ vte_terminal_paste_primary(VteTerminal *terminal) noexcept
 try
 {
 	g_return_if_fail(VTE_IS_TERMINAL(terminal));
-	_vte_debug_print(VTE_DEBUG_SELECTION, "Pasting PRIMARY.\n");
+	_vte_debug_print(vte::debug::category::SELECTION, "Pasting PRIMARY");
 	WIDGET(terminal)->paste(vte::platform::ClipboardType::PRIMARY);
 }
 catch (...)
@@ -4094,7 +4650,7 @@ spawn_async_cb(GObject *source,
         SpawnAsyncCallbackData *data = reinterpret_cast<SpawnAsyncCallbackData*>(user_data);
         VtePty *pty = VTE_PTY(source);
 
-        auto pid = pid_t{-1};
+        auto pid = GPid{-1};
         auto error = vte::glib::Error{};
         if (source) {
                 vte_pty_spawn_finish(pty, result, &pid, error);
@@ -5425,19 +5981,16 @@ catch (...)
  *
  * Returns: (nullable) (transfer none): the URI of the current directory of the
  *   process running in the terminal, or %NULL
+ *
+ * Deprecated: 0.78: Use the %VTE_TERMPROP_CURRENT_FILE_URI_STRING termprop.
  */
 const char *
 vte_terminal_get_current_directory_uri(VteTerminal *terminal) noexcept
-try
 {
-        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), NULL);
-        auto impl = IMPL(terminal);
-        return impl->m_current_directory_uri.size() ? impl->m_current_directory_uri.data() : nullptr;
-}
-catch (...)
-{
-        vte::log_exception();
-        return nullptr;
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return _vte_properties_get_property_uri_string_by_id(vte_terminal_get_termprops(terminal),
+                                                             VTE_PROPERTY_ID_CURRENT_DIRECTORY_URI);
 }
 
 /**
@@ -5447,19 +6000,16 @@ catch (...)
  * Returns: (nullable) (transfer none): the URI of the current file the
  *   process running in the terminal is operating on, or %NULL if
  *   not set
+ *
+ * Deprecated: 0.78: Use the %VTE_TERMPROP_CURRENT_FILE_URI_STRING termprop.
  */
 const char *
 vte_terminal_get_current_file_uri(VteTerminal *terminal) noexcept
-try
 {
-        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), NULL);
-        auto impl = IMPL(terminal);
-        return impl->m_current_file_uri.size() ? impl->m_current_file_uri.data() : nullptr;
-}
-catch (...)
-{
-        vte::log_exception();
-        return nullptr;
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return _vte_properties_get_property_uri_string_by_id(vte_terminal_get_termprops(terminal),
+                                                             VTE_PROPERTY_ID_CURRENT_FILE_URI);
 }
 
 /**
@@ -5572,6 +6122,53 @@ try
 
         if (WIDGET(terminal)->set_delete_binding(binding))
                 g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_DELETE_BINDING]);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
+ * vte_terminal_get_enable_a11y:
+ * @terminal: a #VteTerminal
+ *
+ * Checks whether the terminal communicates with a11y backends
+ *
+ * Returns: %TRUE if a11y is enabled, %FALSE if not
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_enable_a11y(VteTerminal *terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+        return IMPL(terminal)->m_enable_a11y;
+}
+catch (...)
+{
+        vte::log_exception();
+        return false;
+}
+
+/**
+ * vte_terminal_set_enable_a11y:
+ * @terminal: a #VteTerminal
+ * @enable_a11y: %TRUE to enable a11y support
+ *
+ * Controls whether or not the terminal will communicate with a11y backends.
+ *
+ * Since: 0.78
+ */
+void
+vte_terminal_set_enable_a11y(VteTerminal *terminal,
+                             gboolean enable_a11y) noexcept
+try
+{
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+
+        if (IMPL(terminal)->set_enable_a11y(enable_a11y != FALSE))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_ENABLE_A11Y]);
 }
 catch (...)
 {
@@ -6013,6 +6610,7 @@ vte_terminal_get_geometry_hints(VteTerminal *terminal,
                                 GdkGeometry *hints,
                                 int min_rows,
                                 int min_columns) noexcept
+try
 {
         GtkWidget *widget;
         GtkBorder padding;
@@ -6035,16 +6633,23 @@ vte_terminal_get_geometry_hints(VteTerminal *terminal,
         hints->min_width   = hints->base_width  + hints->width_inc  * min_columns;
         hints->min_height  = hints->base_height + hints->height_inc * min_rows;
 
-	_vte_debug_print(VTE_DEBUG_WIDGET_SIZE,
-                         "[Terminal %p] Geometry cell       width %ld height %ld\n"
-                         "                       base       width %d height %d\n"
-                         "                       increments width %d height %d\n"
-                         "                       minimum    width %d height %d\n",
-                         terminal,
+	_vte_debug_print(vte::debug::category::WIDGET_SIZE,
+                         "[Terminal {}] Geometry cell       width {} height {}\n"
+                         "                       base       width {} height {}\n"
+                         "                       increments width {} height {}\n"
+                         "                       minimum    width {} height {}",
+                         (void*)terminal,
                          impl->m_cell_width, impl->m_cell_height,
                          hints->base_width, hints->base_height,
                          hints->width_inc, hints->height_inc,
                          hints->min_width, hints->min_height);
+}
+catch (...)
+{
+        vte::log_exception();
+        // bogus but won't lead to any div-by-zero
+        hints->base_width = hints->base_height = hints->width_inc =
+                hints->height_inc = hints->min_width = hints->min_height = 1;
 }
 
 /**
@@ -6308,7 +6913,7 @@ catch (...)
  *
  * Returns the #VtePty of @terminal.
  *
- * Returns: (transfer none): a #VtePty, or %NULL
+ * Returns: (transfer none) (nullable): a #VtePty, or %NULL
  */
 VtePty *
 vte_terminal_get_pty(VteTerminal *terminal) noexcept
@@ -6696,18 +7301,15 @@ catch (...)
  * @terminal: a #VteTerminal
  *
  * Returns: (nullable) (transfer none): the window title, or %NULL
+ *
+ * Deprecated: 0.78: Use the %VTE_TERMPROP_XTERM_TITLE termprop.
  */
 const char *
 vte_terminal_get_window_title(VteTerminal *terminal) noexcept
-try
 {
-	g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
-	return IMPL(terminal)->m_window_title.data();
-}
-catch (...)
-{
-        vte::log_exception();
-        return nullptr;
+        return vte_terminal_get_termprop_string_by_id(terminal,
+                                                      VTE_PROPERTY_ID_XTERM_TITLE,
+                                                      nullptr);
 }
 
 /**
@@ -6865,7 +7467,7 @@ try
         g_return_if_fail(color != nullptr);
 
         auto impl = IMPL(terminal);
-        auto const c = impl->get_color(VTE_DEFAULT_BG);
+        auto const c = impl->get_color(vte::color_palette::ColorPaletteIndex::default_bg());
         color->red = c->red / 65535.;
         color->green = c->green / 65535.;
         color->blue = c->blue / 65535.;
@@ -6876,6 +7478,27 @@ catch (...)
         vte::log_exception();
         *color = {0., 0., 0., 1.};
 }
+
+/**
+ * vte_terminal_set_suppress_legacy_signals:
+ * @terminal: a #VteTerminal
+ *
+ * Suppress emissions of signals and property notifications
+ * that are deprecated.
+ *
+ * Since: 0.78
+ */
+void
+vte_terminal_set_suppress_legacy_signals(VteTerminal* terminal) noexcept
+try
+{
+        WIDGET(terminal)->set_no_legacy_signals();
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
 
 /**
  * vte_terminal_set_enable_sixel:
@@ -7126,6 +7749,54 @@ catch (...)
 }
 
 /**
+ * vte_terminal_set_enable_legacy_osc777:
+ * @terminal: a #VteTerminal
+ * @enable: whether to enable legacy OSC 777
+ *
+ * Sets whether legacy OSC 777 sequences are translated to
+ * their corresponding termprops.
+ *
+ * Since: 0.78
+ */
+void
+vte_terminal_set_enable_legacy_osc777(VteTerminal* terminal,
+                                      gboolean enable) noexcept
+try
+{
+        g_return_if_fail(VTE_IS_TERMINAL(terminal));
+
+        if (WIDGET(terminal)->set_enable_legacy_osc777(enable != false))
+                g_object_notify_by_pspec(G_OBJECT(terminal), pspecs[PROP_ENABLE_LEGACY_OSC777]);
+}
+catch (...)
+{
+        vte::log_exception();
+}
+
+/**
+ * vte_terminal_get_enable_legacy_osc777:
+ * @terminal: a #VteTerminal
+ * @enable: whether to enable legacy OSC 777
+ *
+ * Returns: %TRUE iff legacy OSC 777 is enabled
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_enable_legacy_osc777(VteTerminal* terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), true);
+
+        return WIDGET(terminal)->enable_legacy_osc777();
+}
+catch (...)
+{
+        vte::log_exception();
+        return true;
+}
+
+/**
  * vte_terminal_set_context_menu_model: (attributes org.gtk.Method.set_property=context-menu-model)
  * @terminal: a #VteTerminal
  * @model: (nullable): a #GMenuModel
@@ -7301,3 +7972,1011 @@ catch (...)
 }
 
 #endif /* VTE_GTK */
+
+/**
+ * vte_terminal_get_termprop_bool_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * Like vte_terminal_get_termprop_bool() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_bool_by_id(VteTerminal* terminal,
+                                     int prop,
+                                     gboolean *valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_bool_by_id(vte_terminal_get_termprops(terminal),
+                                                      prop,
+                                                      valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_bool:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * For a %VTE_PROPERTY_BOOL termprop, sets @value to @prop's value,
+ *   or to %FALSE if @prop is unset, or @prop is not a registered property.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_bool(VteTerminal* terminal,
+                               char const* prop,
+                               gboolean *valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_bool(vte_terminal_get_termprops(terminal),
+                                                prop,
+                                                valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_int_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * Like vte_terminal_get_termprop_int() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_int_by_id(VteTerminal* terminal,
+                                    int prop,
+                                    int64_t *valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_int_by_id(vte_terminal_get_termprops(terminal),
+                                                     prop,
+                                                     valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_int:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * For a %VTE_PROPERTY_INT termprop, sets @value to @prop's value,
+ * or to 0 if @prop is unset, or if @prop is not a registered property.
+ *
+ * If only a subset or range of values are acceptable for the given property,
+ * the caller must validate the returned value and treat any out-of-bounds
+ * value as if the termprop had no value; in particular it *must not* clamp
+ * the values to the expected range.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_int(VteTerminal* terminal,
+                              char const* prop,
+                              int64_t *valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_int(vte_terminal_get_termprops(terminal),
+                                               prop,
+                                               valuep);
+}
+
+
+/**
+ * vte_terminal_get_termprop_uint_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * Like vte_terminal_get_termprop_uint() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_uint_by_id(VteTerminal* terminal,
+                                     int prop,
+                                     uint64_t *valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_uint_by_id(vte_terminal_get_termprops(terminal),
+                                                      prop,
+                                                      valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_uint:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * For a %VTE_PROPERTY_UINT termprop, sets @value to @prop's value,
+ * or to 0 if @prop is unset, or @prop is not a registered property.
+ *
+ * If only a subset or range of values are acceptable for the given property,
+ * the caller must validate the returned value and treat any out-of-bounds
+ * value as if the termprop had no value; in particular it *must not* clamp
+ * the values to the expected range.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_uint(VteTerminal* terminal,
+                               char const* prop,
+                               uint64_t *valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_uint(vte_terminal_get_termprops(terminal),
+                                                prop,
+                                                valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_double_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * Like vte_terminal_get_termprop_double() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_double_by_id(VteTerminal* terminal,
+                                       int prop,
+                                       double* valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_double_by_id(vte_terminal_get_termprops(terminal),
+                                                        prop,
+                                                        valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_double:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * For a %VTE_PROPERTY_DOUBLE termprop, sets @value to @prop's value,
+ *   which is finite; or to 0.0 if @prop is unset, or @prop is not a
+ *   registered property.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_double(VteTerminal* terminal,
+                                 char const* prop,
+                                 double* valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_double(vte_terminal_get_termprops(terminal),
+                                                  prop,
+                                                  valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_rgba_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ * @color: (out) (optional): a #GdkRGBA to fill in
+ *
+ * Like vte_terminal_get_termprop_rgba() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_rgba_by_id(VteTerminal* terminal,
+                                     int prop,
+                                     GdkRGBA* color) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_rgba_by_id(vte_terminal_get_termprops(terminal),
+                                                      prop,
+                                                      color);
+}
+
+/**
+ * vte_terminal_get_termprop_rgba:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ * @color: (out) (optional): a #GdkRGBA to fill in
+ *
+ * Stores the value of a %VTE_PROPERTY_RGB or %VTE_PROPERTY_RGBA termprop in @color and
+ * returns %TRUE if the termprop is set, or stores rgb(0,0,0) or rgba(0,0,0,1) in @color
+ * and returns %FALSE if the termprop is unset.
+ *
+ * Returns: %TRUE iff the termprop is set
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_rgba(VteTerminal* terminal,
+                               char const* prop,
+                               GdkRGBA* color) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_rgba(vte_terminal_get_termprops(terminal),
+                                                prop,
+                                                color);
+}
+
+/**
+ * vte_terminal_get_termprop_string_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ * @size: (out) (optional): a location to store the string length, or %NULL
+ *
+ * Like vte_terminal_get_termprop_string() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: (transfer none) (nullable): the property's value, or %NULL
+ *
+ * Since: 0.78
+ */
+char const*
+vte_terminal_get_termprop_string_by_id(VteTerminal* terminal,
+                                       int prop,
+                                       size_t* size) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_get_property_string_by_id(vte_terminal_get_termprops(terminal),
+                                                        prop,
+                                                        size);
+}
+
+/**
+ * vte_terminal_get_termprop_string:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ * @size: (out) (optional): a location to store the string length, or %NULL
+ *
+ * Returns the value of a %VTE_PROPERTY_STRING termprop, or %NULL if
+ *   @prop is unset, or @prop is not a registered property.
+ *
+ * Returns: (transfer none) (nullable): the property's value, or %NULL
+ *
+ * Since: 0.78
+ */
+char const*
+vte_terminal_get_termprop_string(VteTerminal* terminal,
+                                 char const* prop,
+                                 size_t* size) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_get_property_string(vte_terminal_get_termprops(terminal),
+                                                  prop,
+                                                  size);
+}
+
+/**
+ * vte_terminal_dup_termprop_string_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ * @size: (out) (optional): a location to store the string length, or %NULL
+ *
+ * Like vte_terminal_dup_termprop_string() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: (transfer full) (nullable): the property's value, or %NULL
+ *
+ * Since: 0.78
+ */
+char*
+vte_terminal_dup_termprop_string_by_id(VteTerminal* terminal,
+                                       int prop,
+                                       size_t* size) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_dup_property_string_by_id(vte_terminal_get_termprops(terminal),
+                                                        prop,
+                                                        size);
+}
+
+/**
+ * vte_terminal_dup_termprop_string:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ * @size: (out) (optional): a location to store the string length, or %NULL
+ *
+ * Returns the value of a %VTE_PROPERTY_STRING termprop, or %NULL if
+ *   @prop is unset, or @prop is not a registered property.
+ *
+ * Returns: (transfer full) (nullable): the property's value, or %NULL
+ *
+ * Since: 0.78
+ */
+char*
+vte_terminal_dup_termprop_string(VteTerminal* terminal,
+                                 char const* prop,
+                                 size_t* size) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_dup_property_string(vte_terminal_get_termprops(terminal),
+                                                  prop,
+                                                  size);
+}
+
+/**
+ * vte_terminal_get_termprop_data_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ * @size: (out): a location to store the size of the data
+ *
+ * Like vte_terminal_get_termprop_data() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: (transfer none) (element-type guint8) (array length=size) (nullable): the property's value, or %NULL
+ *
+ * Since: 0.78
+ */
+uint8_t const*
+vte_terminal_get_termprop_data_by_id(VteTerminal* terminal,
+                                     int prop,
+                                     size_t* size) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_get_property_data_by_id(vte_terminal_get_termprops(terminal),
+                                                      prop,
+                                                      size);
+}
+
+/**
+ * vte_terminal_get_termprop_data:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ * @size: (out): a location to store the size of the data
+ *
+ * Returns the value of a %VTE_PROPERTY_DATA termprop, or %NULL if
+ *   @prop is unset, or @prop is not a registered property.
+ *
+ * Returns: (transfer none) (element-type guint8) (array length=size) (nullable): the property's value, or %NULL
+ *
+ * Since: 0.78
+ */
+uint8_t const*
+vte_terminal_get_termprop_data(VteTerminal* terminal,
+                               char const* prop,
+                               size_t* size) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_get_property_data(vte_terminal_get_termprops(terminal),
+                                                prop,
+                                                size);
+}
+
+/**
+ * vte_terminal_ref_termprop_data_bytes_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ *
+ * Like vte_terminal_ref_termprop_data_bytes() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #GBytes, or %NULL
+ *
+ * Since: 0.78
+ */
+GBytes*
+vte_terminal_ref_termprop_data_bytes_by_id(VteTerminal* terminal,
+                                           int prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_data_bytes_by_id(vte_terminal_get_termprops(terminal),
+                                                            prop);
+}
+
+
+/**
+ * vte_terminal_ref_termprop_data_bytes:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ *
+ * Returns the value of a %VTE_PROPERTY_DATA termprop as a #GBytes, or %NULL if
+ *   @prop is unset, or @prop is not a registered property.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #GBytes, or %NULL
+ *
+ * Since: 0.78
+ */
+GBytes*
+vte_terminal_ref_termprop_data_bytes(VteTerminal* terminal,
+                                     char const* prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_data_bytes(vte_terminal_get_termprops(terminal),
+                                                      prop);
+}
+
+/**
+ * vte_terminal_dup_termprop_uuid_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ *
+ * Like vte_terminal_dup_termprop_uuid() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #VteUuid, or %NULL
+ *
+ * Since: 0.78
+ */
+VteUuid*
+vte_terminal_dup_termprop_uuid_by_id(VteTerminal* terminal,
+                                     int prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_dup_property_uuid_by_id(vte_terminal_get_termprops(terminal),
+                                                      prop);
+}
+
+/**
+ * vte_terminal_dup_termprop_uuid:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ *
+ * Returns the value of a %VTE_PROPERTY_UUID termprop as a #VteUuid, or %NULL if
+ *   @prop is unset, or @prop is not a registered property.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #VteUuid, or %NULL
+ *
+ * Since: 0.78
+ */
+VteUuid*
+vte_terminal_dup_termprop_uuid(VteTerminal* terminal,
+                               char const* prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_dup_property_uuid(vte_terminal_get_termprops(terminal),
+                                                prop);
+}
+
+/**
+ * vte_terminal_ref_termprop_uri_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ *
+ * Like vte_terminal_ref_termprop_uri() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #GUri, or %NULL
+ *
+ * Since: 0.78
+ */
+GUri*
+vte_terminal_ref_termprop_uri_by_id(VteTerminal* terminal,
+                                    int prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_uri_by_id(vte_terminal_get_termprops(terminal),
+                                                     prop);
+}
+
+/**
+ * vte_terminal_ref_termprop_uri:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ *
+ * Returns the value of a %VTE_PROPERTY_URI termprop as a #GUri, or %NULL if
+ *   @prop is unset, or @prop is not a registered property.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #GUri, or %NULL
+ *
+ * Since: 0.78
+ */
+GUri*
+vte_terminal_ref_termprop_uri(VteTerminal* terminal,
+                              char const* prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_uri(vte_terminal_get_termprops(terminal),
+                                               prop);
+}
+
+/**
+ * vte_terminal_ref_termprop_image_surface_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ *
+ * Like vte_terminal_ref_termprop_image_surface() except that it takes the
+ * termprop by ID. See that function for more information.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #cairo_surface_t, or %NULL
+ *
+ * Since: 0.80
+ */
+cairo_surface_t*
+vte_terminal_ref_termprop_image_surface_by_id(VteTerminal* terminal,
+                                              int prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_image_surface_by_id(vte_terminal_get_termprops(terminal),
+                                                               prop);
+}
+
+/**
+ * vte_terminal_ref_termprop_image_surface:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ *
+ * Returns the value of a %VTE_PROPERTY_IMAGE termprop as a #cairo_surface_t,
+ *   or %NULL if @prop is unset, or @prop is not a registered property.
+ *
+ * The surface will be a %CAIRO_SURFACE_TYPE_IMAGE with format
+ * %CAIRO_FORMAT_ARGB32 or %CAIRO_FORMAT_RGB24.
+ *
+ * Note that the returned surface is owned by @terminal and its contents
+ * must not be modified.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #cairo_surface_t, or %NULL
+ *
+ * Since: 0.80
+ */
+cairo_surface_t*
+vte_terminal_ref_termprop_image_surface(VteTerminal* terminal,
+                                        char const* prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_image_surface(vte_terminal_get_termprops(terminal),
+                                                         prop);
+}
+
+#if VTE_GTK == 3
+
+/**
+ * vte_terminal_ref_termprop_image_pixbuf_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ *
+ * Like vte_terminal_ref_termprop_image_pixbuf() except that it takes the
+ * termprop by ID. See that function for more information.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #GdkPixbuf, or %NULL
+ *
+ * Since: 0.80
+ */
+GdkPixbuf*
+vte_terminal_ref_termprop_image_pixbuf_by_id(VteTerminal* terminal,
+                                             int prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_image_pixbuf_by_id(vte_terminal_get_termprops(terminal),
+                                                              prop);
+}
+
+/**
+ * vte_terminal_ref_termprop_image_pixbuf:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ *
+ * Returns the value of a %VTE_PROPERTY_IMAGE termprop as a #GdkPixbuf, or %NULL if
+ *   @prop is unset, or @prop is not a registered property.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #GdkPixbuf, or %NULL
+ *
+ * Since: 0.80
+ */
+GdkPixbuf*
+vte_terminal_ref_termprop_image_pixbuf(VteTerminal* terminal,
+                                       char const* prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_image_pixbuf(vte_terminal_get_termprops(terminal),
+                                                        prop);
+}
+
+#elif VTE_GTK == 4
+
+/**
+ * vte_terminal_ref_termprop_image_texture_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ *
+ * Like vte_terminal_ref_termprop_image_texture() except that it takes the
+ * termprop by ID. See that function for more information.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #GdkTexture, or %NULL
+ *
+ * Since: 0.80
+ */
+GdkTexture*
+vte_terminal_ref_termprop_image_texture_by_id(VteTerminal* terminal,
+                                              int prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_image_texture_by_id(vte_terminal_get_termprops(terminal),
+                                                               prop);
+}
+
+/**
+ * vte_terminal_ref_termprop_image_texture:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ *
+ * Returns the value of a %VTE_PROPERTY_IMAGE termprop as a #GdkTexture, or %NULL if
+ *   @prop is unset, or @prop is not a registered property.
+ *
+ * Returns: (transfer full) (nullable): the property's value as a #GdkTexture, or %NULL
+ *
+ * Since: 0.80
+ */
+GdkTexture*
+vte_terminal_ref_termprop_image_texture(VteTerminal* terminal,
+                                        char const* prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_image_texture(vte_terminal_get_termprops(terminal),
+                                                         prop);
+}
+
+#endif /* VTE_GTK == 4 */
+
+/**
+ * vte_terminal_get_termprop_value_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ * @gvalue: (out) (allow-none): a #GValue to be filled in
+ *
+ * Like vte_terminal_get_termprop_value() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: %TRUE iff the property has a value, with @gvalue containig
+ *   the property's value.
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_value_by_id(VteTerminal* terminal,
+                                      int prop,
+                                      GValue* gvalue) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_value_by_id(vte_terminal_get_termprops(terminal),
+                                                       prop,
+                                                       gvalue);
+}
+
+/**
+ * vte_terminal_get_termprop_value:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ * @gvalue: (out) (allow-none): a #GValue to be filled in, or %NULL
+ *
+ * Returns %TRUE with the value of @prop stored in @value (if not %NULL) if,
+ *   the termprop has a value, or %FALSE if @prop is unset, or @prop is not
+ *   a registered property; in that case @value will not be set.
+ *
+ * The value type returned depends on the termprop type:
+ * * A %VTE_PROPERTY_VALUELESS termprop stores no value, and returns %FALSE
+ *   from this function.
+ * * A %VTE_PROPERTY_BOOL termprop stores a %G_TYPE_BOOLEAN value.
+ * * A %VTE_PROPERTY_INT termprop stores a %G_TYPE_INT64 value.
+ * * A %VTE_PROPERTY_UINT termprop stores a %G_TYPE_UINT64 value.
+ * * A %VTE_PROPERTY_DOUBLE termprop stores a %G_TYPE_DOUBLE value.
+ * * A %VTE_PROPERTY_RGB termprop stores a boxed #GdkRGBA value with alpha 1.0 on gtk3,
+ *    and nothing on gtk4.
+ * * A %VTE_PROPERTY_RGBA termprop stores a boxed #GdkRGBA value on gtk3,
+ *    and nothing on gtk4.
+ * * A %VTE_PROPERTY_STRING termprop stores a %G_TYPE_STRING value.
+ * * A %VTE_PROPERTY_DATA termprop stores a boxed #GBytes value.
+ * * A %VTE_PROPERTY_UUID termprop stores a boxed #VteUuid value.
+ * * A %VTE_PROPERTY_URI termprop stores a boxed #GUri value.
+ * * A %VTE_PROPERTY_IMAGE termprop stores a boxed #cairo_surface_t value on gtk3,
+ *     and a boxed #GdkTexture on gtk4
+ *
+ * Returns: %TRUE iff the property has a value, with @gvalue containig
+ *   the property's value.
+ *
+ * Since: 0.78
+ */
+gboolean
+vte_terminal_get_termprop_value(VteTerminal* terminal,
+                                char const* prop,
+                                GValue* gvalue) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_value(vte_terminal_get_termprops(terminal),
+                                                 prop,
+                                                 gvalue);
+}
+
+/**
+ * vte_terminal_ref_termprop_variant_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop ID
+ *
+ * Like vte_terminal_ref_termprop_variant() except that it takes the termprop
+ * by ID. See that function for more information.
+ *
+ * Returns: (transfer full) (nullable): a floating #GVariant, or %NULL
+ *
+ * Since: 0.78
+ */
+GVariant*
+vte_terminal_ref_termprop_variant_by_id(VteTerminal* terminal,
+                                        int prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_variant_by_id(vte_terminal_get_termprops(terminal),
+                                                         prop);
+}
+
+/**
+ * vte_terminal_ref_termprop_variant:
+ * @terminal: a #VteTerminal
+ * @prop: a termprop name
+ *
+ * Returns the value of @prop as a #GVariant, or %NULL if
+ *   @prop unset, or @prop is not a registered property.
+ *
+ * The #GVariantType of the returned #GVariant depends on the termprop type:
+ * * A %VTE_PROPERTY_VALUELESS termprop returns a %G_VARIANT_TYPE_UNIT variant.
+ * * A %VTE_PROPERTY_BOOL termprop returns a %G_VARIANT_TYPE_BOOLEAN variant.
+ * * A %VTE_PROPERTY_INT termprop returns a %G_VARIANT_TYPE_INT64 variant.
+ * * A %VTE_PROPERTY_UINT termprop returns a %G_VARIANT_TYPE_UINT64 variant.
+ * * A %VTE_PROPERTY_DOUBLE termprop returns a %G_VARIANT_TYPE_DOUBLE variant.
+ * * A %VTE_PROPERTY_RGB or %VTE_PROPERTY_RGBA termprop returns a "(ddddv)"
+ *   tuple containing the red, green, blue, and alpha (1.0 for %VTE_PROPERTY_RGB)
+ *   components of the color and a variant of unspecified contents
+ * * A %VTE_PROPERTY_STRING termprop returns a %G_VARIANT_TYPE_STRING variant.
+ * * A %VTE_PROPERTY_DATA termprop returns a "ay" variant (which is *not* a bytestring!).
+ * * A %VTE_PROPERTY_UUID termprop returns a %G_VARIANT_TYPE_STRING variant
+ *   containing a string representation of the UUID in simple form.
+ * * A %VTE_PROPERTY_URI termprop returns a %G_VARIANT_TYPE_STRING variant
+ *   containing a string representation of the URI
+ * * A %VTE_PROPERTY_IMAGE termprop returns %NULL since an image has no
+ *   variant representation.
+ *
+ * Returns: (transfer full) (nullable): a floating #GVariant, or %NULL
+ *
+ * Since: 0.78
+ */
+GVariant*
+vte_terminal_ref_termprop_variant(VteTerminal* terminal,
+                                  char const* prop) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return vte_properties_ref_property_variant(vte_terminal_get_termprops(terminal),
+                                                   prop);
+}
+
+/**
+ * vte_terminal_get_termprop_enum_by_id:
+ * @terminal: a #VteTerminal
+ * @prop: a property ID of a %VTE_PROPERTY_STRING property
+ * @gtype: a #GType of an enum type
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * Like vte_terminal_get_termprop_enum() except that it takes the property
+ * by ID. See that function for more information.
+ *
+ * Returns: %TRUE iff the property was set and could be parsed a
+ *   a value of enumeration type @type
+ *
+ * Since: 0.82
+ */
+gboolean
+vte_terminal_get_termprop_enum_by_id(VteTerminal* terminal,
+                                     int prop,
+                                     GType gtype,
+                                     int64_t* valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_enum_by_id(vte_terminal_get_termprops(terminal),
+                                                      prop,
+                                                      gtype,
+                                                      valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_enum:
+ * @terminal: a #VteTerminal
+ * @prop: a property name of a %VTE_PROPERTY_STRING property
+ * @gtype: a #GType of an enum type
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * See vte_properties_get_property_enum() for more information.
+ *
+ * Returns: %TRUE iff the property was set and could be parsed a
+ *   a value of the enumeration type
+ *
+ * Since: 0.82
+ */
+gboolean
+vte_terminal_get_termprop_enum(VteTerminal* terminal,
+                               char const* prop,
+                               GType gtype,
+                               int64_t* valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_enum(vte_terminal_get_termprops(terminal),
+                                                prop,
+                                                gtype,
+                                                valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_flags_by_id:
+ * @terminal: a #VteTerminal
+ * @gtype: a #GType of a flags type
+ * @ignore_unknown_flags: whether to ignore unknown flags
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * Like vte_terminal_get_termprop_flags() except that it takes the property
+ * by ID. See that function for more information.
+ *
+ * Returns: %TRUE iff the property was set and could be parsed a
+ *   a value of flags type @type
+ *
+ * Since: 0.82
+ */
+gboolean
+vte_terminal_get_termprop_flags_by_id(VteTerminal* terminal,
+                                      int prop,
+                                      GType gtype,
+                                      gboolean ignore_unknown_flags,
+                                      uint64_t* valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_flags_by_id(vte_terminal_get_termprops(terminal),
+                                                       prop,
+                                                       gtype,
+                                                       ignore_unknown_flags,
+                                                       valuep);
+}
+
+/**
+ * vte_terminal_get_termprop_flags:
+ * @terminal: a #VteTerminal
+ * @gtype: a #GType of a flags type
+ * @ignore_unknown_flags: whether to ignore unknown flags
+ * @valuep: (out) (optional): a location to store the value, or %NULL
+ *
+ * See vte_properties_get_property_flags() for more information.
+ *
+ * Returns: %TRUE iff the property was set and could be parsed a
+ *   a value of the flags type
+ *
+ * Since: 0.82
+ */
+gboolean
+vte_terminal_get_termprop_flags(VteTerminal* terminal,
+                                char const* prop,
+                                GType gtype,
+                                gboolean ignore_unknown_flags,
+                                uint64_t* valuep) noexcept
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), false);
+
+        return vte_properties_get_property_flags(vte_terminal_get_termprops(terminal),
+                                                 prop,
+                                                 gtype,
+                                                 ignore_unknown_flags,
+                                                 valuep);
+}
+
+/**
+ * vte_get_termprops_registry:
+ *
+ * Returns the #VtePropertiesRegistry of the terminal's
+ *   termprops.
+ *
+ * Returns: (transfer none): a #VtePropertiesRegistry
+ *
+ * Since: 0.82
+ */
+VtePropertiesRegistry const*
+vte_get_termprops_registry(void) noexcept
+try
+{
+        return _vte_facade_wrap_pr(vte::terminal::termprops_registry());
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/*
+ * _vte_get_termprops_registry:
+ *
+ * Returns the #VtePropertiesRegistry of the terminal's
+ *   termprops (non-const version)
+ *
+ * Returns: (transfer none): a #VtePropertiesRegistry
+ */
+VtePropertiesRegistry*
+_vte_get_termprops_registry(void) noexcept
+try
+{
+        return _vte_facade_wrap_pr(vte::terminal::termprops_registry());
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}
+
+/**
+ * vte_terminal_get_termprops:
+ * @terminal: a #VteTerminal
+ *
+ * Returns the #VteProperties containing the value of the terminal's
+ *   termprops.
+ *
+ * Returns: (transfer none): a #VteProperties
+ *
+ * Since: 0.82
+ */
+VteProperties const*
+vte_terminal_get_termprops(VteTerminal* terminal) noexcept
+try
+{
+        g_return_val_if_fail(VTE_IS_TERMINAL(terminal), nullptr);
+
+        return _vte_facade_wrap_pr(WIDGET(terminal)->termprops());
+}
+catch (...)
+{
+        vte::log_exception();
+        return nullptr;
+}

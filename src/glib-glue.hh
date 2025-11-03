@@ -132,7 +132,7 @@ public:
 
         Timer(callback_type callback,
               char const* name)
-                : m_callback(callback)
+                : m_callback(std::move(callback))
 #if VTE_DEBUG
                 , m_name(name)
 #endif
@@ -280,9 +280,11 @@ namespace vte {
 
 VTE_DECLARE_FREEABLE(GArray, g_array_unref);
 VTE_DECLARE_FREEABLE(GBytes, g_bytes_unref);
+VTE_DECLARE_FREEABLE(GChecksum, g_checksum_free);
 VTE_DECLARE_FREEABLE(GKeyFile, g_key_file_unref);
 VTE_DECLARE_FREEABLE(GOptionContext, g_option_context_free);
 VTE_DECLARE_FREEABLE(GString, g_autoptr_cleanup_gstring_free);
+VTE_DECLARE_FREEABLE(GUri, g_uri_unref);
 VTE_DECLARE_FREEABLE(GVariant, g_variant_unref);
 
 } // namespace vte

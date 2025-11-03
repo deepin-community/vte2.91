@@ -31,11 +31,15 @@
 
 #include <string>
 
-#include "debug.h"
+#include <simdutf.h>
+
+#include "boxed.hh"
+#include "fmt-glue.hh"
 #include "glib-glue.hh"
 #include "libc-glue.hh"
-#include "parser.hh"
+#include "parser-fmt.hh"
 #include "parser-glue.hh"
+#include "parser.hh"
 #include "std-glue.hh"
 #include "utf8.hh"
 #include "vtedefines.hh"
@@ -56,328 +60,14 @@ enum class DataSyntax {
         /* ECMA48_ECMA35, */
 };
 
-char*
-vte::parser::Sequence::ucs4_to_utf8(gunichar const* str,
-                                    ssize_t len) const noexcept
-{
-        return g_ucs4_to_utf8(str, len, nullptr, nullptr, nullptr);
-}
-
-static constexpr char const*
-seq_to_str(unsigned int type) noexcept
-{
-        switch (type) {
-        case VTE_SEQ_NONE: return "NONE";
-        case VTE_SEQ_IGNORE: return "IGNORE";
-        case VTE_SEQ_GRAPHIC: return "GRAPHIC";
-        case VTE_SEQ_CONTROL: return "CONTROL";
-        case VTE_SEQ_ESCAPE: return "ESCAPE";
-        case VTE_SEQ_CSI: return "CSI";
-        case VTE_SEQ_DCS: return "DCS";
-        case VTE_SEQ_OSC: return "OSC";
-        case VTE_SEQ_SCI: return "SCI";
-        case VTE_SEQ_APC: return "APC";
-        case VTE_SEQ_PM: return "PM";
-        case VTE_SEQ_SOS: return "SOS";
-        default:
-                assert(false);
-        }
-}
-
-static constexpr char const*
-cmd_to_str(unsigned int command) noexcept
-{
-        switch (command) {
-#define _VTE_CMD(cmd) case VTE_CMD_##cmd: return #cmd;
-#define _VTE_NOP(cmd) _VTE_CMD(cmd)
-#include "parser-cmd.hh"
-#undef _VTE_CMD
-#undef _VTE_NOP
-        default:
-                return nullptr;
-        }
-}
-
-#if 0
-static constexepr char const*
-charset_alias_to_str(unsigned int cs) noexcept
-{
-        switch (cs) {
-#define _VTE_CHARSET_PASTE(name)
-#define _VTE_CHARSET(name) _VTE_CHARSET_PASTE(name)
-#define _VTE_CHARSET_ALIAS_PASTE(name1,name2) case VTE_CHARSET_##name1: return #name1 "(" ## #name2 ## ")";
-#define _VTE_CHARSET_ALIAS(name1,name2)
-#include "parser-charset.hh"
-#undef _VTE_CHARSET_PASTE
-#undef _VTE_CHARSET
-#undef _VTE_CHARSET_ALIAS_PASTE
-#undef _VTE_CHARSET_ALIAS
-        default:
-                return nullptr; /* not an alias */
-        }
-}
-
-static constexpr char const*
-charset_to_str(unsigned int cs) noexcept
-{
-        auto alias = charset_alias_to_str(cs);
-        if (alias)
-                return alias;
-
-        switch (cs) {
-#define _VTE_CHARSET_PASTE(name) case VTE_CHARSET_##name: return #name;
-#define _VTE_CHARSET(name) _VTE_CHARSET_PASTE(name)
-#define _VTE_CHARSET_ALIAS_PASTE(name1,name2)
-#define _VTE_CHARSET_ALIAS(name1,name2)
-#include "parser-charset.hh"
-#undef _VTE_CHARSET_PASTE
-#undef _VTE_CHARSET
-#undef _VTE_CHARSET_ALIAS_PASTE
-#undef _VTE_CHARSET_ALIAS
-        default:
-                static char buf[32];
-                snprintf(buf, sizeof(buf), "UNKOWN(%u)", cs);
-                return buf;
-        }
-}
-#endif
-
 class PrettyPrinter {
 private:
         std::string m_str;
         bool m_plain;
         bool m_codepoints;
+        std::string m_seq_fmt;
 
         inline constexpr bool plain() const noexcept { return m_plain; }
-
-        class Attribute {
-        public:
-                Attribute(PrettyPrinter* printer,
-                          std::string const& intro,
-                          std::string const& outro) noexcept
-                        : m_printer{printer}
-                        , m_outro{outro} {
-                        if (!m_printer->plain())
-                                m_printer->m_str.append(intro);
-                        }
-
-                ~Attribute() noexcept
-                {
-                        if (!m_printer->plain())
-                                m_printer->m_str.append(m_outro);
-                }
-
-        private:
-                PrettyPrinter* m_printer;
-                std::string m_outro;
-        }; // class Attribute
-
-        class ReverseAttr : private Attribute {
-        public:
-                ReverseAttr(PrettyPrinter* printer)
-                        : Attribute(printer, "\e[7m"s, "\e[27m"s)
-                { }
-        };
-
-        class RedAttr : private Attribute {
-        public:
-                RedAttr(PrettyPrinter* printer)
-                        : Attribute(printer, "\e[7;31m"s, "\e[27;39m"s)
-                { }
-        };
-
-        class GreenAttr : private Attribute {
-        public:
-                GreenAttr(PrettyPrinter* printer)
-                        : Attribute(printer, "\e[7;32m"s, "\e[27;39m"s)
-                { }
-        };
-
-        void
-        print_params(vte::parser::Sequence const& seq) noexcept
-        {
-                auto const size = seq.size();
-                if (size > 0)
-                        m_str.push_back(' ');
-
-                for (unsigned int i = 0; i < size; i++) {
-                        if (!seq.param_default(i))
-                                print_format("%d", seq.param(i));
-                        if (i + 1 < size)
-                                m_str.push_back(seq.param_nonfinal(i) ? ':' : ';');
-                }
-        }
-
-        void
-        print_pintro(vte::parser::Sequence const& seq) noexcept
-        {
-                auto const type = seq.type();
-                if (type != VTE_SEQ_CSI &&
-                    type != VTE_SEQ_DCS)
-                        return;
-
-                auto const p = seq.intermediates() & 0x7;
-                if (p == 0)
-                        return;
-
-                m_str.push_back(' ');
-                m_str.push_back(char(0x40 - p));
-        }
-
-        void
-        print_intermediates(vte::parser::Sequence const& seq) noexcept
-        {
-                auto const type = seq.type();
-                auto intermediates = seq.intermediates();
-                if (type == VTE_SEQ_CSI ||
-                    type == VTE_SEQ_DCS)
-                        intermediates = intermediates >> 3; /* remove pintro */
-
-                while (intermediates != 0) {
-                        unsigned int i = intermediates & 0x1f;
-                        char c = 0x20 + i - 1;
-
-                        m_str.push_back(' ');
-                        if (c == 0x20)
-                                m_str.append("SP"s);
-                        else
-                                m_str.push_back(c);
-
-                        intermediates = intermediates >> 5;
-                }
-        }
-
-        void
-        print_unichar(uint32_t c) noexcept
-        {
-                char buf[7];
-                auto len = g_unichar_to_utf8(c, buf);
-                m_str.append(buf, len);
-        }
-
-        void
-        print_literal(char const* str) noexcept
-        {
-                m_str.append(str);
-        }
-
-        G_GNUC_PRINTF(2, 3)
-        void
-        print_format(char const* format,
-                     ...)
-        {
-                char buf[256];
-                va_list args;
-                va_start(args, format);
-                auto len = g_vsnprintf(buf, sizeof(buf), format, args);
-                va_end(args);
-
-                m_str.append(buf, len);
-        }
-
-        void
-        print_string(vte::parser::Sequence const& seq) noexcept
-        {
-                auto u8str = seq.string_param();
-
-                m_str.push_back('\"');
-                m_str.append(u8str);
-                m_str.push_back('\"');
-
-                g_free(u8str);
-        }
-
-        void
-        print_seq_and_params(vte::parser::Sequence const& seq) noexcept
-        {
-                ReverseAttr attr(this);
-
-                if (seq.command() != VTE_CMD_NONE) {
-                        m_str.push_back('{');
-                        m_str.append(cmd_to_str(seq.command()));
-                        print_params(seq);
-                        m_str.push_back('}');
-                } else {
-                        m_str.push_back('{');
-                        m_str.append(seq_to_str(seq.type()));
-                        print_pintro(seq);
-                        print_params(seq);
-                        print_intermediates(seq);
-                        m_str.push_back(' ');
-                        m_str.push_back(seq.terminator());
-                        m_str.push_back('}');
-                }
-        }
-
-        void
-        print_seq(vte::parser::Sequence const& seq) noexcept
-        {
-                switch (seq.type()) {
-                case VTE_SEQ_NONE: {
-                        RedAttr attr(this);
-                        m_str.append("{NONE}"s);
-                        break;
-                }
-
-                case VTE_SEQ_IGNORE: {
-                        RedAttr attr(this);
-                        m_str.append("{IGNORE}"s);
-                        break;
-                }
-
-                case VTE_SEQ_GRAPHIC: {
-                        auto const terminator = seq.terminator();
-                        bool const printable = g_unichar_isprint(terminator);
-                        if (m_codepoints || !printable) {
-                                if (printable) {
-                                        char ubuf[7];
-                                        ubuf[g_unichar_to_utf8(terminator, ubuf)] = 0;
-                                        print_format("[%04X %s]", terminator, ubuf);
-                                } else {
-                                        print_format("[%04X]", terminator);
-                                }
-                        } else {
-                                print_unichar(terminator);
-                        }
-                        break;
-                }
-
-                case VTE_SEQ_CONTROL:
-                case VTE_SEQ_ESCAPE: {
-                        ReverseAttr attr(this);
-                        print_format("{%s}", cmd_to_str(seq.command()));
-                        break;
-                }
-
-                case VTE_SEQ_CSI:
-                case VTE_SEQ_DCS: {
-                        print_seq_and_params(seq);
-                        break;
-                }
-
-                case VTE_SEQ_OSC: {
-                        ReverseAttr attr(this);
-                        m_str.append("{OSC "s);
-                        print_string(seq);
-                        m_str.push_back('}');
-                        break;
-                }
-
-                case VTE_SEQ_SCI: {
-                        auto const terminator = seq.terminator();
-                        if (terminator <= 0x20)
-                                print_format("{SCI %d/%d}",
-                                             terminator / 16,
-                                             terminator % 16);
-                        else
-                                print_format("{SCI %c}", terminator);
-                        break;
-                }
-
-                default:
-                        assert(false);
-                }
-        }
 
         void
         printout() noexcept
@@ -396,7 +86,12 @@ public:
                       bool codepoints) noexcept
                 : m_plain{plain}
                 , m_codepoints{codepoints}
+                , m_seq_fmt{}
         {
+                m_seq_fmt = "{:";
+                if (m_codepoints)
+                        m_seq_fmt += "u";
+                m_seq_fmt += "}";
         }
 
         ~PrettyPrinter() noexcept
@@ -406,9 +101,40 @@ public:
 
         void VT(vte::parser::Sequence const& seq) noexcept
         {
-                print_seq(seq);
-                if (seq.command() == VTE_CMD_LF)
-                        printout();
+                switch (seq.type()) {
+                case VTE_SEQ_GRAPHIC: [[likely]] {
+                        fmt::format_to(std::back_inserter(m_str),
+                                       fmt::runtime(m_codepoints ? "{:u}" : "{}"),
+                                       vte::make_boxed<char32_t, void>(seq.terminator()));
+                        break;
+                }
+
+                case VTE_SEQ_IGNORE:
+                case VTE_SEQ_NONE: {
+                        constexpr auto attr = fmt::fg(fmt::terminal_color::red);
+                        fmt::format_to(std::back_inserter(m_str),
+                                       attr,
+                                       "{}", seq);
+                        break;
+                }
+
+                case VTE_SEQ_APC:
+                case VTE_SEQ_CONTROL:
+                case VTE_SEQ_CSI:
+                case VTE_SEQ_DCS:
+                case VTE_SEQ_ESCAPE:
+                case VTE_SEQ_OSC:
+                case VTE_SEQ_PM:
+                case VTE_SEQ_SOS: {
+                        constexpr auto attr = fmt::text_style(fmt::emphasis::reverse);
+                        fmt::format_to(std::back_inserter(m_str),
+                                       attr,
+                                       fmt::runtime(m_seq_fmt), seq);
+
+                        if (seq.command() == VTE_CMD_LF)
+                                printout();
+                }
+                }
         }
 
         void enter_data_syntax(DataSyntax syntax) noexcept
@@ -436,26 +162,29 @@ public:
 
 class Linter {
 private:
-        G_GNUC_PRINTF(2, 3)
+
         void
-        warn(char const* format,
-             ...) const noexcept
+        log(fmt::string_view fmt,
+            fmt::format_args args) const
         {
-                va_list args;
-                va_start(args, format);
-                char* str = g_strdup_vprintf(format, args);
-                va_end(args);
-                g_print("WARNING: %s\n", str);
-                g_free(str);
+                fmt::vprintln(stdout, fmt, args);
+        }
+
+        template<typename... T>
+        void
+        warn(fmt::format_string<T...> fmt,
+             T&&... args) const
+        {
+                log(fmt, fmt::make_format_args(args...));
         }
 
         void
         warn_deprecated(int cmd,
                         int replacement_cmd) const noexcept
         {
-                warn("%s is deprecated; use %s instead",
-                     cmd_to_str(cmd),
-                     cmd_to_str(replacement_cmd));
+                warn("{} is deprecated; use {} instead",
+                     vte::parser::cmd_t(cmd),
+                     vte::parser::cmd_t(replacement_cmd));
         }
 
         void
@@ -480,11 +209,11 @@ private:
 #undef _VTE_SGR
 #undef _VTE_NGR
                 case VTE_SGR_SET_FONT_FIRST+1 ... VTE_SGR_SET_FONT_LAST-1:
-                        warn("SGR %d is unsupported", sgr);
+                        warn("SGR {} is unsupported", sgr);
                         break;
 
                 default:
-                        warn("SGR %d is unknown", sgr);
+                        warn("SGR {} is unknown", sgr);
                         break;
 
                 }
@@ -496,7 +225,7 @@ private:
         {
                 auto const sgr = seq.param(idx);
 
-                /* Simplified and adapted from Terminal::seq_parse_sgr_color() */
+                /* Simplified and adapted from sgr.hh */
                 if (seq.param_nonfinal(idx)) {
                         /* Colon version */
                         auto const param = seq.param(++idx);
@@ -504,29 +233,29 @@ private:
                         case 2: {
                                 auto const n = seq.next(idx) - idx;
                                 if (n < 4)
-                                        warn("SGR %d:2 not enough parameters", sgr);
+                                        warn("SGR {}:2 not enough parameters", sgr);
                                 else if (n == 4)
-                                        warn("SGR %d:2:r:g:b is deprecated; use SGR %d:2::r:g:b instead",
+                                        warn("SGR {}:2:r:g:b is deprecated; use SGR {}:2::r:g:b instead",
                                              sgr, sgr);
                                 break;
                         }
                         case 5: {
                                 auto const n = seq.next(idx) - idx;
                                 if (n < 2)
-                                        warn("SGR %d:5 not enough parameters", sgr);
+                                        warn("SGR {}:5 not enough parameters", sgr);
                                 break;
                         }
                         case -1:
-                                warn("SGR %d does not admit default parameters", sgr);
+                                warn("SGR {} does not admit default parameters", sgr);
                                 break;
                         case 0:
                         case 1:
                         case 3:
                         case 4:
-                                warn("SGR %d:%d is unsupported", sgr, param);
+                                warn("SGR {}:{} is unsupported", sgr, param);
                                 break;
                         default:
-                                warn("SGR %d:%d is unknown", sgr, param);
+                                warn("SGR {}:{} is unknown", sgr, param);
                         }
                 } else {
                         /* Semicolon version */
@@ -538,27 +267,27 @@ private:
                                 idx = seq.next(idx);
                                 idx = seq.next(idx);
                                 idx = seq.next(idx);
-                                warn("SGR %d;%d;r;g;b is deprecated; use SGR %d:%d::r:g:b instead",
-                                     sgr, param, sgr, param);
+                                warn("SGR {0};{1};r;g;b is deprecated; use SGR {0}:{1}::r:g:b instead",
+                                     sgr, param);
                                 break;
                         case 5:
                                 /* Consume 1 more parameter */
                                 idx = seq.next(idx);
-                                warn("SGR %d;%d;index is deprecated; use SGR %d:%d:index instead",
-                                     sgr, param, sgr, param);
+                                warn("SGR {0};{1};index is deprecated; use SGR {0}:{1}:index instead",
+                                     sgr, param);
                                 break;
                         case -1:
-                                warn("SGR %d does not admit default parameters", sgr);
+                                warn("SGR {} does not admit default parameters", sgr);
                                 break;
                         case 0:
                         case 1:
                         case 3:
                         case 4:
-                                warn("SGR %d;%d;... is unsupported; use SGR %d:%d:... instead",
-                                     sgr, param, sgr, param);
+                                warn("SGR {0};{1};... is unsupported; use SGR {0}:{1}:... instead",
+                                     sgr, param);
                                 break;
                         default:
-                                warn("SGR %d;%d is unknown", sgr, param);
+                                warn("SGR {};{} is unknown", sgr, param);
                                 break;
                         }
                 }
@@ -584,10 +313,10 @@ private:
                         break;
                 case 4:
                 case 5:
-                        warn("SGR %d:%d is unsupported", sgr, param);
+                        warn("SGR {}:{} is unsupported", sgr, param);
                         break;
                 default:
-                        warn("SGR %d:%d is unknown", sgr, param);
+                        warn("SGR {}:{} is unknown", sgr, param);
                         break;
                 }
         }
@@ -613,7 +342,7 @@ private:
 
                         default:
                                 if (seq.param_nonfinal(i))
-                                        warn("SGR %d does not admit subparameters", param);
+                                        warn("SGR {} does not admit subparameters", param);
                                 break;
                         }
                 }
@@ -629,7 +358,7 @@ public:
                 switch (cmd) {
                 case VTE_CMD_OSC:
                         if (seq.st() == 7 /* BEL */)
-                                warn("OSC terminated by BEL may be ignored; use ST (ESC \\) instead.");
+                                warn("OSC terminated by BEL may be ignored; use ST (ESC \\) instead");
                         break;
 
                 case VTE_CMD_DECSLRM_OR_SCOSC:
@@ -649,7 +378,7 @@ public:
 
                 default:
                         if (cmd >= VTE_CMD_NOP_FIRST)
-                                warn("%s is unimplemented", cmd_to_str(cmd));
+                                warn("{} is unimplemented", vte::parser::cmd_t(cmd));
                         break;
                 }
         }
@@ -754,7 +483,7 @@ private:
                         case vte::base::UTF8Decoder::ACCEPT: {
                                 auto ret = m_parser.feed(m_utf8_decoder.codepoint());
                                 if (G_UNLIKELY(ret < 0)) {
-                                        g_printerr("Parser error!\n");
+                                        fmt::println(stderr, "Parser error!");
                                         return bufend;
                                 }
 
@@ -775,7 +504,7 @@ private:
                     m_utf8_decoder.flush()) {
                         auto ret = m_parser.feed(m_utf8_decoder.codepoint());
                         if (G_UNLIKELY(ret < 0)) {
-                                g_printerr("Parser error!\n");
+                                fmt::println(stderr, "Parser error!");
                                 return bufend;
                         }
 
@@ -844,14 +573,14 @@ private:
                      int repeat)
         {
                 if (fd == STDIN_FILENO && repeat != 1) {
-                        g_printerr("Cannot consume STDIN more than once\n");
+                        fmt::println(stderr, "Cannot consume STDIN more than once");
                         return false;
                 }
 
                 for (auto i = 0; i < repeat; ++i) {
                         if (i > 0 && lseek(fd, 0, SEEK_SET) != 0) {
                                 auto errsv = vte::libc::ErrnoSaver{};
-                                g_printerr("Failed to seek: %s\n", g_strerror(errsv));
+                                fmt::println("Failed to seek: {}", g_strerror(errsv));
                                 return false;
                         }
 
@@ -904,8 +633,10 @@ public:
                                         fd = open(filename, O_RDONLY);
                                         if (fd == -1) {
                                                 auto errsv = vte::libc::ErrnoSaver{};
-                                                g_printerr("Error opening file %s: %s\n",
-                                                           filename, g_strerror(errsv));
+                                                fmt::println(stderr,
+                                                             "Error opening file \"{}\": {}",
+                                                             filename,
+                                                             g_strerror(errsv));
                                         }
                                 }
                                 if (fd != -1) {
@@ -926,16 +657,16 @@ public:
         void print_statistics() const noexcept
         {
                 for (unsigned int s = VTE_SEQ_NONE + 1; s < VTE_SEQ_N; s++) {
-                        g_printerr("%\'16" G_GSIZE_FORMAT " %s\n",  m_seq_stats[s], seq_to_str(s));
+                        fmt::println("{:>16} {}",  m_seq_stats[s], vte::parser::seq_t(s));
                 }
 
-                g_printerr("\n");
+                fmt::println(stderr, "");
                 for (unsigned int s = 0; s < VTE_CMD_N; s++) {
                         if (m_cmd_stats[s] > 0) {
-                                g_printerr("%\'16" G_GSIZE_FORMAT " %s%s\n",
-                                           m_cmd_stats[s],
-                                           cmd_to_str(s),
-                                           s >= VTE_CMD_NOP_FIRST ? " [NOP]" : "");
+                                fmt::println("{:>16} {}{}",
+                                             m_cmd_stats[s],
+                                             vte::parser::cmd_t(s),
+                                             s >= VTE_CMD_NOP_FIRST ? " [NOP]"sv : ""sv);
                         }
                 }
         }
@@ -953,15 +684,16 @@ public:
                 for (unsigned int i = 0; i < m_bench_times->len; ++i)
                         total_time += g_array_index(m_bench_times, int64_t, i);
 
-                g_printerr("\nTimes: best %\'" G_GINT64_FORMAT "µs "
-                           "worst %\'" G_GINT64_FORMAT "µs "
-                           "average %\'" G_GINT64_FORMAT "µs\n",
-                           g_array_index(m_bench_times, int64_t, 0),
-                           g_array_index(m_bench_times, int64_t, m_bench_times->len - 1),
-                           total_time / (int64_t)m_bench_times->len);
-                for (unsigned int i = 0; i < m_bench_times->len; ++i)
-                        g_printerr("  %\'" G_GINT64_FORMAT "µs\n",
-                                   g_array_index(m_bench_times, int64_t, i));
+                fmt::println(stderr,
+                             "\nTimes: best {}µs worst {}µs average {}µs",
+                             g_array_index(m_bench_times, int64_t, 0),
+                             g_array_index(m_bench_times, int64_t, m_bench_times->len - 1),
+                             total_time / (int64_t)m_bench_times->len);
+                for (unsigned int i = 0; i < m_bench_times->len; ++i) {
+                        fmt::println(stderr,
+                                     "  {:>10}µs",
+                                     g_array_index(m_bench_times, int64_t, i));
+                }
         }
 
 }; // class Processor
@@ -1062,19 +794,21 @@ main(int argc,
      char *argv[])
 {
         setlocale(LC_ALL, "");
-        _vte_debug_init();
 
         Options options{};
         auto error = vte::glib::Error{};
         if (!options.parse(argc, argv, error)) {
-                g_printerr("Failed to parse arguments: %s\n", error.message());
+                fmt::println(stderr,
+                             "Failed to parse arguments: {}",
+                             error.message());
                 return EXIT_FAILURE;
         }
 
         auto rv = false;
         if (options.lint()) {
                 if (options.repeat() != 1) {
-                        g_printerr("Cannot use repeat option for linter\n");
+                        fmt::println(stderr,
+                                     "Cannot use repeat option for linter");
                 } else {
                         rv = process(options, Linter{});
                 }

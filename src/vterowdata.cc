@@ -19,7 +19,7 @@
 
 #include <config.h>
 
-#include "debug.h"
+#include "debug.hh"
 #include "vterowdata.hh"
 
 #include <string.h>
@@ -61,7 +61,9 @@ _vte_cells_realloc (VteCells *cells, guint32 len)
 {
 	guint32 alloc_len = (1 << g_bit_storage (MAX (len, 80))) - 1;
 
-	_vte_debug_print(VTE_DEBUG_RING, "Enlarging cell array of %d cells to %d cells\n", cells ? cells->alloc_len : 0, alloc_len);
+	_vte_debug_print(vte::debug::category::RING,
+                         "Enlarging cell array of {} cells to {} cells",
+                         cells ? cells->alloc_len : 0, alloc_len);
 	cells = (VteCells *)g_realloc (cells, G_STRUCT_OFFSET (VteCells, cells) + alloc_len * sizeof (cells->cells[0]));
 	cells->alloc_len = alloc_len;
 
@@ -71,7 +73,9 @@ _vte_cells_realloc (VteCells *cells, guint32 len)
 static void
 _vte_cells_free (VteCells *cells)
 {
-	_vte_debug_print(VTE_DEBUG_RING, "Freeing cell array of %d cells\n", cells->alloc_len);
+	_vte_debug_print(vte::debug::category::RING,
+                         "Freeing cell array of {} cells",
+                         cells->alloc_len);
 	g_free (cells);
 }
 
@@ -102,7 +106,7 @@ _vte_row_data_fini (VteRowData *row)
 	row->cells = NULL;
 }
 
-static inline gboolean
+static inline bool
 _vte_row_data_ensure (VteRowData *row, gulong len)
 {
 	VteCells *cells = _vte_cells_for_cell_array (row->cells);
@@ -115,6 +119,12 @@ _vte_row_data_ensure (VteRowData *row, gulong len)
 	row->cells = _vte_cells_realloc (cells, len)->cells;
 
 	return TRUE;
+}
+
+bool
+_vte_row_data_ensure_len (VteRowData *row, gulong len)
+{
+        return _vte_row_data_ensure(row, len);
 }
 
 void
@@ -187,6 +197,25 @@ void _vte_row_data_copy (const VteRowData *src, VteRowData *dst)
         dst->len = src->len;
         dst->attr = src->attr;
         memcpy(dst->cells, src->cells, src->len * sizeof (src->cells[0]));
+}
+
+void _vte_row_data_fill_cells(VteRowData* row,
+                              gulong start_idx,
+                              VteCell const* fill_cell,
+                              VteCell const* cells,
+                              gulong len)
+{
+        auto const needlen = start_idx + len;
+        if (!_vte_row_data_ensure(row, needlen))
+                return;
+
+        // Fill up to start_idx with @fill_cell
+        _vte_row_data_fill(row, fill_cell, start_idx);
+        // ... then copy the cells over ...
+        std::copy_n(cells, len, &row->cells[start_idx]);
+        // ... and adjust the row length
+        if (row->len < needlen)
+                row->len = needlen;
 }
 
 /* Get the length, ignoring trailing empty cells (with a custom background color). */

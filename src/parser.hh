@@ -18,10 +18,11 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
-
-#include "debug.h"
+#include <optional>
+#include <string_view>
 
 #include "parser-arg.hh"
 #include "parser-string.hh"
@@ -136,11 +137,10 @@ enum {
 };
 
 enum {
-#define _VTE_REPLY(cmd,type,final,pintro,intermediate,code) VTE_REPLY_##cmd,
-#include "parser-reply.hh"
-#undef _VTE_REPLY
-
-        VTE_REPLY_N
+        VTE_CHARSET_TYPE_GRAPHIC_94 = 0,
+        VTE_CHARSET_TYPE_GRAPHIC_96 = 1,
+        VTE_CHARSET_TYPE_CONTROL = 2,
+        VTE_CHARSET_TYPE_OCS = 3,
 };
 
 enum {
@@ -184,8 +184,12 @@ enum {
 
 #define VTE_CHARSET_CHARSET_MASK   ((1U << 16) - 1U)
 #define VTE_CHARSET_SLOT_OFFSET    (16)
+#define VTE_CHARSET_SLOT_MASK      (3U)
+#define VTE_CHARSET_TYPE_OFFSET    (18)
+#define VTE_CHARSET_TYPE_MASK      (3U)
 #define VTE_CHARSET_GET_CHARSET(c) ((c) & VTE_CHARSET_CHARSET_MASK)
-#define VTE_CHARSET_GET_SLOT(c)    ((c) >> VTE_CHARSET_SLOT_OFFSET)
+#define VTE_CHARSET_GET_SLOT(c)    (((c) >> VTE_CHARSET_SLOT_OFFSET) & VTE_CHARSET_SLOT_MASK)
+#define VTE_CHARSET_GET_TYPE(c)    (((c) >> VTE_CHARSET_TYPE_OFFSET) & VTE_CHARSET_TYPE_MASK)
 
 enum {
       VTE_DISPATCH_UNRIPE = 1u << 0,
@@ -205,12 +209,6 @@ struct vte_seq_t {
         uint32_t introducer;
         uint32_t st;
 };
-
-#ifdef PARSER_INCLUDE_NOP
-# define _VTE_NOQ(...) _VTE_SEQ(__VA_ARGS__)
-#else
-# define _VTE_NOQ(...)
-#endif
 
 /*
  * Terminal Parser
@@ -284,7 +282,13 @@ struct vte_seq_t {
 #define VTE_SEQ_REMOVE_PARAMETER(u)    ((u) >> VTE_SEQ_PARAMETER_BITS)
 #define VTE_SEQ_INTERMEDIATE(u)        ((u) & VTE_SEQ_INTERMEDIATE_MASK)
 #define VTE_SEQ_REMOVE_INTERMEDIATE(u) ((u) >> VTE_SEQ_INTERMEDIATE_BITS)
-#define VTE_MAKE_CHARSET(c,s)          ((c) | ((s) << VTE_CHARSET_SLOT_OFFSET))
+#define VTE_MAKE_CHARSET_FULL(c,s,t) ((c) |                         \
+                                      ((s) << VTE_CHARSET_SLOT_OFFSET) | \
+                                      ((t) << VTE_CHARSET_TYPE_OFFSET))
+#define VTE_MAKE_CHARSET_94(c,s) (VTE_MAKE_CHARSET_FULL(c, s, VTE_CHARSET_TYPE_GRAPHIC_94))
+#define VTE_MAKE_CHARSET_96(c,s) (VTE_MAKE_CHARSET_FULL(c, s, VTE_CHARSET_TYPE_GRAPHIC_96))
+#define VTE_MAKE_CHARSET_CONTROL(c,s) (VTE_MAKE_CHARSET_FULL(c, s, VTE_CHARSET_TYPE_CONTROL))
+#define VTE_MAKE_CHARSET_OCS(c) (VTE_MAKE_CHARSET_FULL(c, 0, VTE_CHARSET_TYPE_OCS))
 
 /*
  * _VTE_SEQ_CODE_ESC(final, intermediates):
@@ -347,8 +351,7 @@ namespace parser {
  */
 enum State {
         GROUND,           /* initial state and ground */
-        DCS_PASS_ESC,     /* ESC after DCS which may be ESC \ aka C0 ST */
-        OSC_STRING_ESC,   /* ESC after OSC which may be ESC \ aka C0 ST */
+        ST_ESC,           /* ESC after control string introducer which may be ESC \ aka C0 ST */
         ESC,              /* ESC sequence was started */
         ESC_INT,          /* intermediate escape characters */
         CSI_ENTRY,        /* starting CSI sequence */
@@ -359,7 +362,6 @@ enum State {
         DCS_PARAM,        /* DCS parameters */
         DCS_INT,          /* intermediate DCS characters */
         DCS_PASS,         /* DCS data passthrough */
-        DCS_IGNORE,       /* DCS error; ignore this DCS sequence */
         OSC_STRING,       /* parsing OSC sequence */
         ST_IGNORE,        /* unimplemented seq; ignore until ST */
         SCI,              /* single character introducer sequence was started */
@@ -412,7 +414,7 @@ public:
                 case 0x98:                /* SOS */
                 case 0x9e:                /* PM */
                 case 0x9f:                /* APC */
-                        return VTE_TRANSITION_NO_ACTION(raw, ST_IGNORE);
+                        return VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
                         // FIXMEchpe shouldn't this use action_clear?
                 case 0x90:                /* DCS */
                         return VTE_TRANSITION(raw, DCS_ENTRY, action_dcs_start);
@@ -473,16 +475,14 @@ public:
          * * SUB aborts the DCS in our parser, but e.g. a DECSIXEL
          *   parser will handle it as if 3/15 was received.
          *
-         * * the ST terminating the DCS will be dispatched as an ST
-         *   sequence, instead of producing an IGNORE sequence
-         *   (this is easily fixable but would slightly complicate
-         *   the parser for no actual gain).
+         * * the sequence will be dispatched as an IGNORE sequence
+         *   instead of as a DCS sequence
          */
         inline void ignore_until_st() noexcept
         {
                 switch (m_state) {
                 case DCS_PASS:
-                        VTE_TRANSITION_NO_ACTION(0, DCS_IGNORE);
+                        VTE_TRANSITION(0, ST_IGNORE, action_st_ignore_start);
                         break;
                 default:
                         g_assert_not_reached();
@@ -510,14 +510,18 @@ protected:
                                 return action_print(raw);
                         }
 
-                case DCS_PASS_ESC:
-                case OSC_STRING_ESC:
+                case ST_ESC:
                         if (raw == 0x5c /* '\' */) {
-                                switch (m_state) {
-                                case DCS_PASS_ESC:
+                                switch (m_seq.introducer) {
+                                case 0x50: // ESC P
+                                case 0x90: // DCS
                                         return VTE_TRANSITION(raw, GROUND, action_dcs_dispatch);
-                                case OSC_STRING_ESC:
+
+                                case 0x5d: // ESC ]
+                                case 0x9d: // OSC
                                         return VTE_TRANSITION(raw, GROUND, action_osc_dispatch);
+                                case 0: // ignore
+                                        return VTE_TRANSITION(raw, GROUND, action_ignore);
                                 }
                         }
 
@@ -534,7 +538,8 @@ protected:
                                 return VTE_TRANSITION(raw, ESC, action_clear_int);
                         case 0x20 ... 0x2f:        /* [' ' - '\'] */
                                 return VTE_TRANSITION(raw, ESC_INT, action_collect_esc);
-                        case 0x30 ... 0x4f:        /* ['0' - '~'] \ */
+                        case 0x30 ... 0x3f:        /* ['0' - '?'] */
+                        case 0x40 ... 0x4f:        /* ['@' - '~'] \ */
                         case 0x51 ... 0x57:        /* { 'P', 'X', 'Z' '[', ']', '^', '_' } */
                         case 0x59:
                         case 0x5c:
@@ -552,9 +557,9 @@ protected:
                         case 0x58:                /* 'X' */
                         case 0x5e:                /* '^' */
                         case 0x5f:                /* '_' */
-                                return VTE_TRANSITION_NO_ACTION(raw, ST_IGNORE);
+                                return VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
                         case 0x9c:                /* ST */
-                                return VTE_TRANSITION(raw, GROUND, action_ignore);
+                                return VTE_TRANSITION(raw, GROUND, action_execute);
                         }
 
                         return VTE_TRANSITION(raw, GROUND, action_ignore);
@@ -594,10 +599,10 @@ protected:
                         case 0x40 ... 0x7e:        /* ['@' - '~'] */
                                 return VTE_TRANSITION(raw, GROUND, action_csi_dispatch);
                         case 0x9c:                /* ST */
-                                return VTE_TRANSITION(raw, GROUND, action_ignore);
+                                return VTE_TRANSITION(raw, GROUND, action_execute);
                         }
 
-                        return VTE_TRANSITION_NO_ACTION(raw, CSI_IGNORE);
+                        return VTE_TRANSITION(raw, GROUND, action_ignore);
                 case CSI_PARAM:
                         switch (raw) {
                         case 0x00 ... 0x1a:        /* C0 \ { ESC } */
@@ -618,10 +623,10 @@ protected:
                         case 0x40 ... 0x7e:        /* ['@' - '~'] */
                                 return VTE_TRANSITION(raw, GROUND, action_csi_dispatch);
                         case 0x9c:                /* ST */
-                                return VTE_TRANSITION(raw, GROUND, action_ignore);
+                                return VTE_TRANSITION(raw, GROUND, action_execute);
                         }
 
-                        return VTE_TRANSITION_NO_ACTION(raw, CSI_IGNORE);
+                        return VTE_TRANSITION(raw, GROUND, action_ignore);
                 case CSI_INT:
                         switch (raw) {
                         case 0x00 ... 0x1a:        /* C0 \ { ESC } */
@@ -636,10 +641,10 @@ protected:
                         case 0x40 ... 0x7e:        /* ['@' - '~'] */
                                 return VTE_TRANSITION(raw, GROUND, action_csi_dispatch);
                         case 0x9c:                /* ST */
-                                return VTE_TRANSITION(raw, GROUND, action_ignore);
+                                return VTE_TRANSITION(raw, GROUND, action_execute);
                         }
 
-                        return VTE_TRANSITION_NO_ACTION(raw, CSI_IGNORE);
+                        return VTE_TRANSITION(raw, GROUND, action_ignore);
                 case CSI_IGNORE:
                         switch (raw) {
                         case 0x00 ... 0x1a:        /* C0 \ { ESC } */
@@ -652,10 +657,10 @@ protected:
                         case 0x40 ... 0x7e:        /* ['@' - '~'] */
                                 return VTE_TRANSITION_NO_ACTION(raw, GROUND);
                         case 0x9c:                /* ST */
-                                return VTE_TRANSITION(raw, GROUND, action_ignore);
+                                return VTE_TRANSITION(raw, GROUND, action_execute);
                         }
 
-                        return action_nop(raw);
+                        return VTE_TRANSITION(raw, GROUND, action_ignore);
                 case DCS_ENTRY:
                         switch (raw) {
                         case 0x00 ... 0x1a:        /* C0 \ ESC */
@@ -679,7 +684,7 @@ protected:
                                 return VTE_TRANSITION(raw, GROUND, action_ignore);
                         }
 
-                        return VTE_TRANSITION(raw, DCS_PASS, action_dcs_consume);
+                        return VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
                 case DCS_PARAM:
                         switch (raw) {
                         case 0x00 ... 0x1a:        /* C0 \ { ESC } */
@@ -696,14 +701,14 @@ protected:
                         case 0x3b:                 /* ';' */
                                 return action_finish_param(raw);
                         case 0x3c ... 0x3f:        /* ['<' - '?'] */
-                                return VTE_TRANSITION_NO_ACTION(raw, DCS_IGNORE);
+                                return VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
                         case 0x40 ... 0x7e:        /* ['@' - '~'] */
                                 return VTE_TRANSITION(raw, DCS_PASS, action_dcs_consume);
                         case 0x9c:                /* ST */
                                 return VTE_TRANSITION(raw, GROUND, action_ignore);
                         }
 
-                        return VTE_TRANSITION(raw, DCS_PASS, action_dcs_consume);
+                        return VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
                 case DCS_INT:
                         switch (raw) {
                         case 0x00 ... 0x1a:        /* C0 \ { ESC } */
@@ -714,38 +719,26 @@ protected:
                         case 0x20 ... 0x2f:        /* [' ' - '\'] */
                                 return action_collect_csi(raw);
                         case 0x30 ... 0x3f:        /* ['0' - '?'] */
-                                return VTE_TRANSITION_NO_ACTION(raw, DCS_IGNORE);
+                                return VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
                         case 0x40 ... 0x7e:        /* ['@' - '~'] */
                                 return VTE_TRANSITION(raw, DCS_PASS, action_dcs_consume);
                         case 0x9c:                /* ST */
                                 return VTE_TRANSITION(raw, GROUND, action_ignore);
                         }
 
-                        return VTE_TRANSITION(raw, DCS_PASS, action_dcs_consume);
+                        return VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
                 case DCS_PASS:
                         switch (raw) {
                         case 0x00 ... 0x1a:        /* ASCII \ { ESC } */
                         case 0x1c ... 0x7f:
                                 return action_dcs_collect(raw);
                         case 0x1b:                /* ESC */
-                                return VTE_TRANSITION_NO_ACTION(raw, DCS_PASS_ESC);
+                                return VTE_TRANSITION_NO_ACTION(raw, ST_ESC);
                         case 0x9c:                /* ST */
                                 return VTE_TRANSITION(raw, GROUND, action_dcs_dispatch);
                         }
 
                         return action_dcs_collect(raw);
-                case DCS_IGNORE:
-                        switch (raw) {
-                        case 0x00 ... 0x1a:        /* ASCII \ { ESC } */
-                        case 0x1c ... 0x7f:
-                                return action_nop(raw);
-                        case 0x1b:                /* ESC */
-                                return VTE_TRANSITION(raw, ESC, action_clear_int);
-                        case 0x9c:                /* ST */
-                                return VTE_TRANSITION_NO_ACTION(raw, GROUND);
-                        }
-
-                        return action_nop(raw);
                 case OSC_STRING:
                         switch (raw) {
                         case 0x00 ... 0x06:        /* C0 \ { BEL, ESC } */
@@ -753,7 +746,7 @@ protected:
                         case 0x1c ... 0x1f:
                                 return action_nop(raw);
                         case 0x1b:                /* ESC */
-                                return VTE_TRANSITION_NO_ACTION(raw, OSC_STRING_ESC);
+                                return VTE_TRANSITION_NO_ACTION(raw, ST_ESC);
                         case 0x20 ... 0x7f:        /* [' ' - DEL] */
                                 return action_osc_collect(raw);
                         case 0x07:                /* BEL */
@@ -768,7 +761,7 @@ protected:
                         case 0x1c ... 0x7f:
                                 return action_nop(raw);
                         case 0x1b:                /* ESC */
-                                return VTE_TRANSITION(raw, ESC, action_clear_int);
+                                return VTE_TRANSITION_NO_ACTION(raw, ST_ESC);
                         case 0x9c:                /* ST */
                                 return VTE_TRANSITION(raw, GROUND, action_ignore);
                         }
@@ -826,7 +819,10 @@ protected:
                  * Transition to {CSI,DCS}_IGNORE to ignore the
                  * whole sequence.
                  */
-                VTE_TRANSITION_NO_ACTION(raw, m_state == CSI_PARAM ?  CSI_IGNORE : DCS_IGNORE);
+                if (m_state == CSI_PARAM)
+                        VTE_TRANSITION_NO_ACTION(raw, CSI_IGNORE);
+                else if (m_state == DCS_PARAM)
+                        VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
         }
 
         uint32_t parse_host_sci(vte_seq_t const* seq) noexcept;
@@ -972,8 +968,8 @@ protected:
 
         inline int action_dcs_collect(uint32_t raw) noexcept
         {
-                if G_UNLIKELY (!vte_seq_string_push(&m_seq.arg_str, raw))
-                        m_state = DCS_IGNORE;
+                if (!vte_seq_string_push(&m_seq.arg_str, raw)) [[unlikely]]
+                        return VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
 
                 return VTE_SEQ_NONE;
         }
@@ -1032,6 +1028,12 @@ protected:
                 return VTE_SEQ_NONE;
         }
 
+        inline int action_st_ignore_start(uint32_t raw) noexcept
+        {
+                m_seq.introducer = 0;
+                return VTE_SEQ_NONE;
+        }
+
         /* The next two functions are only called when encountering a ';' or ':',
          * so if there's already MAX-1 parameters, the ';' or ':' would finish
          * the MAXth parameter and there would be a default or non-default
@@ -1083,8 +1085,8 @@ protected:
                  * Only characters from 0x20..0x7e and >= 0xa0 are allowed here.
                  * Our state-machine already verifies those restrictions.
                  */
-                if G_UNLIKELY (!vte_seq_string_push(&m_seq.arg_str, raw))
-                        m_state = ST_IGNORE;
+                if (!vte_seq_string_push(&m_seq.arg_str, raw)) [[unlikely]]
+                        return VTE_TRANSITION(raw, ST_IGNORE, action_st_ignore_start);
 
                 return VTE_SEQ_NONE;
         }
@@ -1168,11 +1170,6 @@ public:
 
         typedef int number;
 
-        char* ucs4_to_utf8(gunichar const* str,
-                           ssize_t len = -1) const noexcept;
-
-        void print() const noexcept;
-
         /* type:
          *
          *
@@ -1204,6 +1201,21 @@ public:
         inline constexpr unsigned int charset() const noexcept
         {
                 return VTE_CHARSET_GET_CHARSET(m_seq->charset);
+        }
+
+        /* charset_type:
+         *
+         * This is the type of charset. In a %VTE_CMD_GnDM, or %VTE_CMD_GnDMm
+         * command, this is either %VTE_CHARSET_TYPE_GRAPHIC_94, or
+         * %VTE_CHARSET_TYPEGRAPHIC_96; in a %VTE_CMD_CnD command, this is
+         * %VTE_CHARSET_TYPE_CONTROL, and in a %VTE_CMD_DOCS command, this is
+         * a %VTE_CHARSET_TYPE_OCS charset.
+         *
+         * Returns: the type of the charset
+         */
+        inline constexpr unsigned int charset_type() const noexcept
+        {
+                return VTE_CHARSET_GET_TYPE(m_seq->charset);
         }
 
         /* slot:
@@ -1274,6 +1286,18 @@ public:
                 return (st() & 0x80) != 0;
         }
 
+        /* is_st_bel:
+         *
+         * Whether the control string was terminated with a BEL. This is only supported
+         * for OSC, for xterm compatibility, and is deprecated.
+         *
+         * Returns: true iff the terminator was BEL
+         */
+        inline constexpr bool is_st_bel() const noexcept
+        {
+                return st() == 0x7;
+        }
+
         /* is_ripe:
          *
          * Whether the control string is complete.
@@ -1305,51 +1329,18 @@ public:
                 return m_seq->intermediates;
         }
 
-        // FIXMEchpe: upgrade to C++17 and use the u32string_view version below, instead
         /*
          * string:
          *
-         * This is the string argument of a DCS or OSC sequence.
+         * This is the string argument of a DCS, OSC, APC, PM, or SOS sequence.
          *
-         * Returns: the string argument
+         * Returns: the control string
          */
-        inline std::u32string string() const noexcept
+        inline std::u32string_view string() const noexcept
         {
                 size_t len;
                 auto buf = vte_seq_string_get(&m_seq->arg_str, &len);
-                return std::u32string(reinterpret_cast<char32_t*>(buf), len);
-        }
-
-        #if 0
-        /*
-         * string:
-         *
-         * This is the string argument of a DCS or OSC sequence.
-         *
-         * Returns: the string argument
-         */
-        inline constexpr std::u32string_view string() const noexcept
-        {
-                size_t len = 0;
-                auto buf = vte_seq_string_get(&m_seq->arg_str, &len);
-                return std::u32string_view(buf, len);
-        }
-        #endif
-
-        /*
-         * string:
-         *
-         * This is the string argument of a DCS or OSC sequence.
-         *
-         * Returns: the string argument
-         */
-        std::string string_utf8() const noexcept;
-
-        inline char* string_param() const noexcept
-        {
-                size_t len = 0;
-                auto buf = vte_seq_string_get(&m_seq->arg_str, &len);
-                return ucs4_to_utf8(buf, len);
+                return std::u32string_view{reinterpret_cast<char32_t*>(buf), len};
         }
 
         /* size:
@@ -1560,6 +1551,103 @@ public:
                 return idx <= next(start_idx);
         }
 
+        /* collect_number:
+         * @start_idx:
+         *
+         * Collects a big number from a run of subparameters ending in a
+         * final parameter.
+         * This allows encoding numbers larger than the 16-bit parameter
+         * limit, by using a run of subparameters which encode the number
+         * in big-endian. Default subparams have value 0.
+         *
+         * Returns: the number, or %nullopt if the number exceeds the
+         *   limits of uint64_t.
+         */
+        inline constexpr std::optional<uint64_t> collect_number(unsigned int start_idx) const noexcept
+        {
+                auto idx = start_idx;
+                auto const next_idx = next(start_idx);
+
+                // No more than 4 16-bit parameters can be combined
+                // without exceeding the 64-bit number limits.
+                if ((next_idx - idx) > 4)
+                        return std::nullopt;
+
+                // No leading default (empty) subparams allowed
+                if (next_idx != (idx + 1) && param_default(idx))
+                        return std::nullopt;
+
+                auto value = uint64_t{0};
+                for (auto i = idx; i < next_idx; ++i) {
+                        value <<= 16;
+                        value += param(i, 0);
+                }
+
+                return value;
+        }
+
+        /* collect_char:
+         * @idx:
+         * @default_v: return value for default parameter
+         * @zero_v: return value for zero parameter
+         *
+         * Collects an unicode character from a parameter or a run of
+         * subparameters ending in a final parameter.
+         *
+         * A default final parameter returns the character @default_v;
+         * a final zeroed parameter returns the charcacter @zero_v if
+         * not -1, or @default_v if -1.
+         *
+         * This allows encoding characters outside plane 0 using
+         * either the big number encoding (see collect_number() above),
+         * or as a pair of surrogates.
+         *
+         * Returns: the character, or %nullopt for incorrect encoding,
+         *   or if the character specified by the params is a control
+         *   character, or a surrogate
+         */
+        inline constexpr std::optional<char32_t> collect_char(unsigned int idx,
+                                                              int default_v = 0x20,
+                                                              int zero_v = -1) const noexcept
+        {
+                auto const n_params = next(idx) - idx;
+
+                auto v = uint32_t{0};
+                if (n_params == 1) {
+                        auto pv = param(idx);
+                        if (pv == 0)
+                                pv = zero_v;
+
+                        v = pv != -1 ? pv : default_v;
+                } else if (n_params == 2) {
+                        auto p0 = param(idx, 0);
+                        auto p1 = param(idx + 1, 0);
+
+                        // Surrogate pair
+                        if ((p0 & 0xfffffc00u) == 0xd800u &&
+                            (p1 & 0xfffffc00u) == 0xdc00u) {
+                                v = ((p0 & 0x3ffu) << 10) + (p1 & 0x3ffu) + 0x10000u;
+                        } else { // big number as above
+                                v = p0 << 16 | p1;
+                        }
+                } else if (n_params > 2) {
+                        v = 0;
+                }
+
+                auto valid = [](uint32_t c) constexpr noexcept -> bool
+                {
+                        return c < 0x110000u && // plane 0 ... plane 17
+                                (c & 0xffffff60u) != 0 && // not C0 nor C1
+                                c != 0x7fu && // not DEL
+                                (c & 0xfffff800u) != 0xd800u; // not a surrogate
+                };
+
+                if (valid(v))
+                        return char32_t{v};
+
+                return std::nullopt;
+        }
+
         inline explicit operator bool() const { return m_seq != nullptr; }
 
         /* This is only used in the test suite */
@@ -1568,8 +1656,6 @@ public:
 private:
         vte_seq_t* m_seq{nullptr};
 
-        char const* type_string() const;
-        char const* command_string() const;
 }; // class Sequence
 
 

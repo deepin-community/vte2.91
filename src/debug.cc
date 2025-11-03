@@ -17,54 +17,53 @@
 
 #include "config.h"
 
+#include "debug.hh"
+
 #include <string.h>
 
 #include <glib.h>
-#include "debug.h"
-
-guint _vte_debug_flags;
 
 void
 _vte_debug_init(void)
 {
 #if VTE_DEBUG
-  const GDebugKey keys[] = {
-    { "misc",         VTE_DEBUG_MISC         },
-    { "io",           VTE_DEBUG_IO           },
-    { "adj",          VTE_DEBUG_ADJ          },
-    { "updates",      VTE_DEBUG_UPDATES      },
-    { "events",       VTE_DEBUG_EVENTS       },
-    { "parser",       VTE_DEBUG_PARSER       },
-    { "signals",      VTE_DEBUG_SIGNALS      },
-    { "selection",    VTE_DEBUG_SELECTION    },
-    { "substitution", VTE_DEBUG_SUBSTITUTION },
-    { "ring",         VTE_DEBUG_RING         },
-    { "pty",          VTE_DEBUG_PTY          },
-    { "cursor",       VTE_DEBUG_CURSOR       },
-    { "keyboard",     VTE_DEBUG_KEYBOARD     },
-    { "lifecycle",    VTE_DEBUG_LIFECYCLE    },
-    { "work",         VTE_DEBUG_WORK         },
-    { "cells",        VTE_DEBUG_CELLS        },
-    { "timeout",      VTE_DEBUG_TIMEOUT      },
-    { "draw",         VTE_DEBUG_DRAW         },
-    { "ally",         VTE_DEBUG_ALLY         },
-    { "pangocairo",   VTE_DEBUG_PANGOCAIRO   },
-    { "widget-size",  VTE_DEBUG_WIDGET_SIZE  },
-    { "style",        VTE_DEBUG_STYLE        },
-    { "resize",       VTE_DEBUG_RESIZE       },
-    { "regex",        VTE_DEBUG_REGEX        },
-    { "hyperlink",    VTE_DEBUG_HYPERLINK    },
-    { "modes",        VTE_DEBUG_MODES        },
-    { "emulation",    VTE_DEBUG_EMULATION    },
-    { "ringview",     VTE_DEBUG_RINGVIEW     },
-    { "bidi",         VTE_DEBUG_BIDI         },
-    { "conversion",   VTE_DEBUG_CONVERSION   },
-    { "exceptions",   VTE_DEBUG_EXCEPTIONS   },
-  };
+        using enum vte::debug::category;
+        const GDebugKey keys[] = {
+                { "misc",         unsigned(MISC         )},
+                { "io",           unsigned(IO           )},
+                { "adj",          unsigned(ADJ          )},
+                { "updates",      unsigned(UPDATES      )},
+                { "events",       unsigned(EVENTS       )},
+                { "parser",       unsigned(PARSER       )},
+                { "signals",      unsigned(SIGNALS      )},
+                { "selection",    unsigned(SELECTION    )},
+                { "substitution", unsigned(SUBSTITUTION )},
+                { "ring",         unsigned(RING         )},
+                { "pty",          unsigned(PTY          )},
+                { "keyboard",     unsigned(KEYBOARD     )},
+                { "cells",        unsigned(CELLS        )},
+                { "draw",         unsigned(DRAW         )},
+                { "ally",         unsigned(ALLY         )},
+                { "pangocairo",   unsigned(PANGOCAIRO   )},
+                { "widget-size",  unsigned(WIDGET_SIZE  )},
+                { "resize",       unsigned(RESIZE       )},
+                { "regex",        unsigned(REGEX        )},
+                { "hyperlink",    unsigned(HYPERLINK    )},
+                { "modes",        unsigned(MODES        )},
+                { "ringview",     unsigned(RINGVIEW     )},
+                { "bidi",         unsigned(BIDI         )},
+                { "conversion",   unsigned(CONVERSION   )},
+                { "exceptions",   unsigned(EXCEPTIONS   )},
+        };
 
-  _vte_debug_flags = g_parse_debug_string (g_getenv("VTE_DEBUG"),
-                                           keys, G_N_ELEMENTS (keys));
-  _vte_debug_print(0xFFFFFFFFu, "VTE debug flags = %x\n", _vte_debug_flags);
+        auto flags = g_parse_debug_string(g_getenv("VTE_DEBUG"),
+                                          keys,
+                                          G_N_ELEMENTS(keys));
+        vte::debug::debug_categories = vte::debug::category(flags);
+
+        _vte_debug_print(vte::debug::category::ALL,
+                         "VTE debug flags {:x}",
+                         flags);
 #endif /* VTE_DEBUG */
 }
 
@@ -164,7 +163,7 @@ _vte_debug_hexdump(char const* str,
         while (hexdump_line(s, ofs, buf + ofs, len - ofs))
                 ofs += 16;
 
-        g_printerr("%s", s->str);
+        vte::debug::println("{}", s->str);
         g_string_free(s, true);
 #endif /* VTE_DEBUG */
 }

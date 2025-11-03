@@ -33,12 +33,21 @@
 #include "vteinternal.hh"
 #include "vtegtk.hh"
 #include "caps.hh"
-#include "debug.h"
+#include "debug.hh"
+#include "keymap.h"
+#include "sgr.hh"
+#include "base16.hh"
+#include "xtermcap.hh"
 
 #define BEL_C0 "\007"
 #define ST_C0 _VTE_CAP_ST
 
 #include <algorithm>
+#include <string>
+#include <string_view>
+#include <version>
+
+#include <simdutf.h>
 
 using namespace std::literals;
 
@@ -64,158 +73,41 @@ enum {
         VTE_XTERM_WM_TITLE_STACK_POP = 23,
 };
 
-enum {
-        VTE_SGR_COLOR_SPEC_RGB    = 2,
-        VTE_SGR_COLOR_SPEC_LEGACY = 5
-};
-
 inline consteval int firmware_version() noexcept
 {
         return (VTE_MAJOR_VERSION * 100 + VTE_MINOR_VERSION) * 100 + VTE_MICRO_VERSION;
 }
 
-void
-vte::parser::Sequence::print() const noexcept
-{
-#if VTE_DEBUG
-        auto c = m_seq != nullptr ? terminator() : 0;
-        char c_buf[7];
-        g_snprintf(c_buf, sizeof(c_buf), "%lc", c);
-        g_printerr("%s:%s [%s]", type_string(), command_string(),
-                   g_unichar_isprint(c) ? c_buf : _vte_debug_sequence_to_string(c_buf, -1));
-        if (m_seq != nullptr && m_seq->n_args > 0) {
-                g_printerr("[ ");
-                for (unsigned int i = 0; i < m_seq->n_args; i++) {
-                        if (i > 0)
-                                g_print(", ");
-                        g_printerr("%d", vte_seq_arg_value(m_seq->args[i]));
-                }
-                g_printerr(" ]");
-        }
-        if (m_seq->type == VTE_SEQ_OSC || m_seq->type == VTE_SEQ_DCS) {
-                char* str = string_param();
-                g_printerr(" \"%s\"", str);
-                g_free(str);
-        }
-        g_printerr("\n");
-#endif
-}
-
-char const*
-vte::parser::Sequence::type_string() const
-{
-        if (G_UNLIKELY(m_seq == nullptr))
-                return "(nil)";
-
-        switch (type()) {
-        case VTE_SEQ_NONE:    return "NONE";
-        case VTE_SEQ_IGNORE:  return "IGNORE";
-        case VTE_SEQ_GRAPHIC: return "GRAPHIC";
-        case VTE_SEQ_CONTROL: return "CONTROL";
-        case VTE_SEQ_ESCAPE:  return "ESCAPE";
-        case VTE_SEQ_CSI:     return "CSI";
-        case VTE_SEQ_DCS:     return "DCS";
-        case VTE_SEQ_OSC:     return "OSC";
-        case VTE_SEQ_SCI:     return "SCI";
-        case VTE_SEQ_APC:     return "APC";
-        case VTE_SEQ_PM:      return "PM";
-        case VTE_SEQ_SOS:     return "SOS";
-        default:
-                g_assert(false);
-                return nullptr;
-        }
-}
-
-char const*
-vte::parser::Sequence::command_string() const
-{
-        if (G_UNLIKELY(m_seq == nullptr))
-                return "(nil)";
-
-        switch (command()) {
-#define _VTE_CMD(cmd) case VTE_CMD_##cmd: return #cmd;
-#define _VTE_NOP(cmd)
-#include "parser-cmd.hh"
-#undef _VTE_CMD
-#undef _VTE_NOP
-        default:
-                static char buf[32];
-                snprintf(buf, sizeof(buf), "NOP OR UNKOWN(%u)", command());
-                return buf;
-        }
-}
-
-// FIXMEchpe optimise this
-std::string
-vte::parser::Sequence::string_utf8() const noexcept
-{
-        std::string str;
-
-        size_t len;
-        auto buf = vte_seq_string_get(&m_seq->arg_str, &len);
-
-        char u[6];
-        for (size_t i = 0; i < len; ++i) {
-                auto ulen = g_unichar_to_utf8(buf[i], u);
-                str.append((char const*)u, ulen);
-        }
-
-        return str;
-}
-
-/* A couple are duplicated from vte.c, to keep them static... */
-
-/* Check how long a string of unichars is.  Slow version. */
-static gsize
-vte_unichar_strlen(gunichar const* c)
-{
-	gsize i;
-	for (i = 0; c[i] != 0; i++) ;
-	return i;
-}
-
-/* Convert a wide character string to a multibyte string */
-/* Simplified from glib's g_ucs4_to_utf8() to simply allocate the maximum
- * length instead of walking the input twice.
- */
-char*
-vte::parser::Sequence::ucs4_to_utf8(gunichar const* str,
-                                    ssize_t len) const noexcept
-{
-        if (len < 0)
-                len = vte_unichar_strlen(str);
-        auto outlen = (len * VTE_UTF8_BPC) + 1;
-
-        auto result = (char*)g_try_malloc(outlen);
-        if (result == nullptr)
-                return nullptr;
-
-        auto end = str + len;
-        auto p = result;
-        for (auto i = str; i < end; i++)
-                p += g_unichar_to_utf8(*i, p);
-        *p = '\0';
-
-        return result;
-}
-
 namespace vte {
 namespace terminal {
+
+using namespace vte::color_palette;
+using namespace vte::osc_colors;
 
 /* Emit a "bell" signal. */
 void
 Terminal::emit_bell()
 {
-        _vte_debug_print(VTE_DEBUG_SIGNALS, "Emitting `bell'.\n");
+        _vte_debug_print(vte::debug::category::SIGNALS, "Emitting `bell'");
         g_signal_emit(m_terminal, signals[SIGNAL_BELL], 0);
 }
 
 /* Emit a "resize-window" signal.  (Grid size.) */
 void
 Terminal::emit_resize_window(guint columns,
-                                       guint rows)
+                             guint rows)
 {
-        _vte_debug_print(VTE_DEBUG_SIGNALS, "Emitting `resize-window'.\n");
+        // Ignore resizes with excessive number of rows or columns,
+        // see https://gitlab.gnome.org/GNOME/vte/-/issues/2786
+        if (columns < VTE_MIN_GRID_WIDTH ||
+            columns > 511 ||
+            rows < VTE_MIN_GRID_HEIGHT ||
+            rows > 511)
+                return;
+
+        _vte_debug_print(vte::debug::category::SIGNALS,
+                         "Emitting `resize-window' {} columns {} rows",
+                         columns, rows);
         g_signal_emit(m_terminal, signals[SIGNAL_RESIZE_WINDOW], 0, columns, rows);
 }
 
@@ -399,8 +291,8 @@ Terminal::set_mode_ecma(vte::parser::Sequence const& seq,
                 auto const param = seq.collect1(i);
                 auto const mode = m_modes_ecma.mode_from_param(param);
 
-                _vte_debug_print(VTE_DEBUG_MODES,
-                                 "Mode %d (%s) %s\n",
+                _vte_debug_print(vte::debug::category::MODES,
+                                 "Mode {} ({}) {}",
                                  param, m_modes_ecma.mode_to_cstring(mode),
                                  set ? "set" : "reset");
 
@@ -410,8 +302,8 @@ Terminal::set_mode_ecma(vte::parser::Sequence const& seq,
                 m_modes_ecma.set(mode, set);
 
                 if (mode == m_modes_ecma.eBDSM) {
-                        _vte_debug_print(VTE_DEBUG_BIDI,
-                                         "BiDi %s mode\n",
+                        _vte_debug_print(vte::debug::category::BIDI,
+                                         "BiDi {} mode",
                                          set ? "implicit" : "explicit");
                         maybe_apply_bidi_attributes(VTE_BIDI_FLAG_IMPLICIT);
                 }
@@ -434,13 +326,15 @@ Terminal::update_mouse_protocol() noexcept
         else
                 m_mouse_tracking_mode = MouseTrackingMode::eNONE;
 
-        m_mouse_smooth_scroll_delta = 0.0;
+        m_mouse_smooth_scroll_x_delta = 0.0;
+        m_mouse_smooth_scroll_y_delta = 0.0;
 
         /* Mouse pointer might change */
         apply_mouse_cursor();
 
-        _vte_debug_print(VTE_DEBUG_MODES,
-                         "Mouse protocol is now %d\n", (int)m_mouse_tracking_mode);
+        _vte_debug_print(vte::debug::category::MODES,
+                         "Mouse protocol is now {}",
+                         int(m_mouse_tracking_mode));
 }
 
 void
@@ -549,16 +443,14 @@ Terminal::set_mode_private(int mode,
                 break;
 
         case vte::terminal::modes::Private::eVTE_BIDI_BOX_MIRROR:
-                _vte_debug_print(VTE_DEBUG_BIDI,
-                                 "BiDi box drawing mirroring %s\n",
-                                 set ? "enabled" : "disabled");
+                _vte_debug_print(vte::debug::category::BIDI,
+                                 "BiDi box drawing mirroring: {}", set);
                 maybe_apply_bidi_attributes(VTE_BIDI_FLAG_BOX_MIRROR);
                 break;
 
         case vte::terminal::modes::Private::eVTE_BIDI_AUTO:
-                        _vte_debug_print(VTE_DEBUG_BIDI,
-                                         "BiDi dir autodetection %s\n",
-                                         set ? "enabled" : "disabled");
+                        _vte_debug_print(vte::debug::category::BIDI,
+                                         "BiDi dir autodetection: {}", set);
                 maybe_apply_bidi_attributes(VTE_BIDI_FLAG_AUTO);
                 break;
 
@@ -576,8 +468,8 @@ Terminal::set_mode_private(vte::parser::Sequence const& seq,
                 auto const param = seq.collect1(i);
                 auto const mode = m_modes_private.mode_from_param(param);
 
-                _vte_debug_print(VTE_DEBUG_MODES,
-                                 "Private mode %d (%s) %s\n",
+                _vte_debug_print(vte::debug::category::MODES,
+                                 "Private mode {} ({}) {}",
                                  param, m_modes_private.mode_to_cstring(mode),
                                  set ? "set" : "reset");
 
@@ -598,15 +490,15 @@ Terminal::save_mode_private(vte::parser::Sequence const& seq,
                 auto const mode = m_modes_private.mode_from_param(param);
 
                 if (mode < 0) {
-                        _vte_debug_print(VTE_DEBUG_MODES,
-                                         "Saving private mode %d (%s)\n",
+                        _vte_debug_print(vte::debug::category::MODES,
+                                         "Saving private mode {} ({})",
                                          param, m_modes_private.mode_to_cstring(mode));
                         continue;
                 }
 
                 if (save) {
-                        _vte_debug_print(VTE_DEBUG_MODES,
-                                         "Saving private mode %d (%s) is %s\n",
+                        _vte_debug_print(vte::debug::category::MODES,
+                                         "Saving private mode {} ({}) is {}",
                                          param, m_modes_private.mode_to_cstring(mode),
                                          m_modes_private.get(mode) ? "set" : "reset");
 
@@ -614,8 +506,8 @@ Terminal::save_mode_private(vte::parser::Sequence const& seq,
                 } else {
                         bool const set = m_modes_private.pop_saved(mode);
 
-                        _vte_debug_print(VTE_DEBUG_MODES,
-                                         "Restoring private mode %d (%s) to %s\n",
+                        _vte_debug_print(vte::debug::category::MODES,
+                                         "Restoring private mode {} ({}) to {}",
                                          param, m_modes_private.mode_to_cstring(mode),
                                          set ? "set" : "reset");
 
@@ -629,6 +521,136 @@ Terminal::set_character_replacement(unsigned slot)
 {
         g_assert(slot < G_N_ELEMENTS(m_character_replacements));
         m_character_replacement = &m_character_replacements[slot];
+}
+
+template<class B>
+static void
+append_attr_sgr_params(VteCellAttr const& attr,
+                       B&& builder)
+{
+        // The VT520/525 manual shows an example response from DECRQSS SGR,
+        // which start with 0 (reset-all).
+        builder.append_param(VTE_SGR_RESET_ALL);
+
+        if (attr.bold())
+                builder.append_param(VTE_SGR_SET_BOLD);
+        if (attr.dim())
+                builder.append_param(VTE_SGR_SET_DIM);
+        if (attr.italic())
+                builder.append_param(VTE_SGR_SET_ITALIC);
+        if (auto v = attr.underline()) {
+                if (v == 1)
+                        builder.append_param(VTE_SGR_SET_UNDERLINE);
+                else if (v == 2)
+                        builder.append_param(VTE_SGR_SET_UNDERLINE_DOUBLE);
+                else
+                        builder.append_subparams({VTE_SGR_SET_UNDERLINE, int(v)});
+        }
+        if (attr.blink())
+                builder.append_param(VTE_SGR_SET_BLINK);
+        if (attr.reverse())
+                builder.append_param(VTE_SGR_SET_REVERSE);
+        if (attr.invisible())
+                builder.append_param(VTE_SGR_SET_INVISIBLE);
+        if (attr.strikethrough())
+                builder.append_param(VTE_SGR_SET_STRIKETHROUGH);
+        if (attr.overline())
+                builder.append_param(VTE_SGR_SET_OVERLINE);
+
+        auto append_color = [&](uint32_t cidx,
+                                unsigned default_cidx,
+                                int sgr,
+                                int legacy_sgr_first,
+                                int legacy_sgr_last,
+                                int legacy_sgr_bright_first,
+                                int legacy_sgr_bright_last,
+                                int redbits,
+                                int greenbits,
+                                int bluebits) constexpr noexcept -> void {
+                if (cidx == default_cidx)
+                        return;
+
+                if (cidx & VTE_RGB_COLOR_MASK(redbits, greenbits, bluebits)) {
+                        // Truecolour
+                        auto const red   = VTE_RGB_COLOR_GET_COMPONENT(cidx, greenbits + bluebits, redbits);
+                        auto const green = VTE_RGB_COLOR_GET_COMPONENT(cidx, bluebits, greenbits);
+                        auto const blue  = VTE_RGB_COLOR_GET_COMPONENT(cidx, 0, bluebits);
+
+                        builder.append_subparams({sgr,
+                                        vte::parser::detail::VTE_SGR_COLOR_SPEC_RGB,
+                                        -1 /* colourspace */,
+                                        int(red),
+                                        int(green),
+                                        int(blue)});
+                        return;
+                }
+
+                if (cidx & VTE_DIM_COLOR)
+                        cidx &= ~VTE_DIM_COLOR;
+
+                if (cidx & VTE_LEGACY_COLORS_OFFSET) {
+                        // Legacy colour
+
+                        cidx -= VTE_LEGACY_COLORS_OFFSET;
+                        if (cidx < unsigned(legacy_sgr_last - legacy_sgr_first + 1)) {
+                                builder.append_param(legacy_sgr_first + cidx);
+                                return;
+                        }
+                        if (cidx >= VTE_COLOR_BRIGHT_OFFSET) {
+                                cidx -= VTE_COLOR_BRIGHT_OFFSET;
+                                if (cidx < unsigned(legacy_sgr_bright_last - legacy_sgr_bright_first + 1)) {
+                                        builder.append_param(legacy_sgr_bright_first + cidx);
+                                        return;
+                                }
+                        }
+
+                        return;
+                }
+
+                // Palette colour
+
+                if (cidx < 256) {
+                        builder.append_subparams({sgr,
+                                        vte::parser::detail::VTE_SGR_COLOR_SPEC_LEGACY,
+                                        int(cidx)});
+                        return;
+                }
+        };
+
+        append_color(attr.fore(),
+                     VTE_DEFAULT_FG,
+                     VTE_SGR_SET_FORE_SPEC,
+                     VTE_SGR_SET_FORE_LEGACY_START,
+                     VTE_SGR_SET_FORE_LEGACY_END,
+                     VTE_SGR_SET_FORE_LEGACY_BRIGHT_START,
+                     VTE_SGR_SET_FORE_LEGACY_BRIGHT_END,
+                     8, 8, 8);
+        append_color(attr.back(),
+                     VTE_DEFAULT_BG,
+                     VTE_SGR_SET_BACK_SPEC,
+                     VTE_SGR_SET_BACK_LEGACY_START,
+                     VTE_SGR_SET_BACK_LEGACY_END,
+                     VTE_SGR_SET_BACK_LEGACY_BRIGHT_START,
+                     VTE_SGR_SET_BACK_LEGACY_BRIGHT_END,
+                     8, 8, 8);
+        append_color(attr.deco(),
+                     VTE_DEFAULT_FG,
+                     VTE_SGR_SET_DECO_SPEC,
+                     -1, -1, -1, -1,
+                     4, 5, 5);
+}
+
+template<class B>
+static void
+append_attr_decsgr_params(VteCellAttr const& attr,
+                          B&& builder)
+{
+        // The VT520/525 manual shows an example response from DECRQSS SGR,
+        // which start with 0 (reset-all); do the same for DECSGR.
+        builder.append_param(VTE_DECSGR_RESET_ALL);
+
+        if (attr.overline())
+                builder.append_param(VTE_DECSGR_SET_OVERLINE);
 }
 
 /* Clear from the cursor position (inclusive!) to the beginning of the line. */
@@ -766,8 +788,8 @@ Terminal::clear_to_eol()
 void
 Terminal::set_cursor_column(vte::grid::column_t col)
 {
-	_vte_debug_print(VTE_DEBUG_PARSER,
-                         "Moving cursor to column %ld.\n", col);
+	_vte_debug_print(vte::debug::category::PARSER,
+                         "Moving cursor to column {}", col);
 
         vte::grid::column_t left_col, right_col;
         if (m_modes_private.DEC_ORIGIN()) {
@@ -801,8 +823,8 @@ Terminal::set_cursor_column1(vte::grid::column_t col)
 void
 Terminal::set_cursor_row(vte::grid::row_t row)
 {
-        _vte_debug_print(VTE_DEBUG_PARSER,
-                         "Moving cursor to row %ld.\n", row);
+        _vte_debug_print(vte::debug::category::PARSER,
+                         "Moving cursor to row {}", row);
 
         vte::grid::row_t top_row, bottom_row;
         if (m_modes_private.DEC_ORIGIN()) {
@@ -893,6 +915,353 @@ Terminal::erase_characters(long count,
 
 	/* We've modified the display.  Make a note of it. */
         m_text_deleted_flag = TRUE;
+}
+
+void
+Terminal::copy_rect(grid_rect source_rect,
+                    grid_point dest) noexcept
+try
+{
+        // Copies the rectangle of cells denoted by @source_rect to the
+        // destination rect which is @source_rect translatecd to
+        // dest_top, dest_left. If the destination rect is partially
+        // off-screen, the operation is clipped.
+        //
+        // @source_rect is inclusive, @source_rect and @dest are 0-based
+        //
+        // @source_rect and @dest_dect must be entirely inside the screen.
+
+        auto dest_rect = source_rect.clone().move_to(dest);
+        if (dest_rect.empty())
+                return;
+
+        auto const screen_rect = grid_rect{0, 0, int(m_column_count) - 1, int(m_row_count) - 1};
+        if (!screen_rect.contains(source_rect) ||
+            !screen_rect.contains(dest_rect))
+                return;
+
+        auto const dest_width = dest_rect.right() - dest_rect.left() + 1;
+
+        // Ensure all used rows exist
+        // auto const first_row = std::min(source_rect.top(), dest_rect.top());
+        auto const last_row = std::max(source_rect.bottom(), dest_rect.bottom());
+        auto rowdelta = m_screen->insert_delta + last_row - long(m_screen->row_data->next()) + 1;
+        if (rowdelta > 0) [[unlikely]] {
+                do {
+                        ring_append(false);
+                } while (--rowdelta);
+
+                adjust_adjustments();
+        }
+
+        // Buffer to simplify copying when source and dest overlap
+        auto vec = std::vector<VteCell>{};
+        vec.reserve(dest_width);
+
+        auto copy_row = [&](auto srow,
+                            auto drow) -> void
+        {
+                auto srowdata = m_screen->row_data->index_writable(srow);
+                if (!srowdata)
+                        return;
+
+                if (!_vte_row_data_ensure_len(srowdata, source_rect.right() + 1))
+                        return;
+
+                vec.clear();
+                auto col = source_rect.left();
+                if (auto cell = _vte_row_data_get(srowdata, col)) {
+                        // there is at least some data in this row to copy
+
+                        // If we start with a fragment, need to fill with defaults first
+                        while (col < int(srowdata->len) &&
+                               col <= source_rect.right() &&
+                               cell->attr.fragment()) {
+                                vec.push_back(basic_cell); // or m_defaults?
+                                ++cell;
+                                ++col;
+                        }
+
+                        // Now copy non-fragment cells, if any
+                        while (col < int(srowdata->len) &&
+                               col + int(cell->attr.columns()) <= source_rect.right() + 1) {
+                                auto const cols = cell->attr.columns();
+                                for (auto j = 0u; j < cols; ++j, ++cell)
+                                        vec.push_back(*cell);
+
+                                col += cols;
+                        }
+
+                        // Fill left-over space (if any) with attributes from source
+                        // but erased character content
+                        for (;
+                             col < int(srowdata->len) && col <= source_rect.right();
+                             ++col, ++cell) {
+                                auto erased_cell = VteCell{.c = 0, .attr = cell->attr};
+                                erased_cell.attr.set_fragment(false);
+                                vec.push_back(erased_cell);
+                        }
+                }
+
+                // Fill left-over space (if any) with erased default attributes
+                for (; col <= source_rect.right(); ++col)
+                        vec.push_back(m_defaults); // or basic_cell ??
+
+                assert(vec.size() == size_t(dest_width));
+
+                auto drowdata = m_screen->row_data->index_writable(drow);
+                if (!drowdata)
+                        return;
+
+                if (!_vte_row_data_ensure_len(drowdata, dest_rect.right() + 1))
+                        return;
+
+                cleanup_fragments(drowdata, drow, dest_rect.left(), dest_rect.right() + 1);
+                _vte_row_data_fill_cells(drowdata,
+                                         dest_rect.left(),
+                                         &basic_cell, // or m_defaults ?
+                                         vec.data(),
+                                         vec.size());
+
+                // FIXME: truncate row if only erased cells at end?
+        };
+
+        if (dest_rect.top() < source_rect.top() ||
+            ((dest_rect.top() == source_rect.top()) &&
+             (dest_rect.left() < source_rect.left()))) {
+                // Copy from top to bottom and left-to-right
+                auto drow = m_screen->insert_delta + dest_rect.top();
+                for (auto srow = m_screen->insert_delta + source_rect.top();
+                     srow <= m_screen->insert_delta + source_rect.bottom();
+                     ++srow, ++drow) {
+                        copy_row(srow, drow);
+                }
+        } else {
+                // Copy from bottom to top (would need to copy right-
+                // to-left if not using the buffer)
+                auto drow = m_screen->insert_delta + dest_rect.bottom();
+                for (auto srow = m_screen->insert_delta + source_rect.bottom();
+                     srow >= m_screen->insert_delta + source_rect.top();
+                     --srow, --drow) {
+                        copy_row(srow, drow);
+                }
+        }
+
+        /* We modified the display, so make a note of it for completeness. */
+        m_text_modified_flag = true;
+
+        emit_text_modified();
+        invalidate_all();
+}
+catch (...)
+{
+}
+
+void
+Terminal::fill_rect(grid_rect rect,
+                    char32_t c,
+                    VteCellAttr attr) noexcept
+try
+{
+        // Fills the rectangle of cells denoted by @rect with character @c
+        // and attribute @attr.
+        // Note that the bottom and right parameters in @rect are inclusive.
+
+        auto const cw = character_width(c);
+        if (cw == 0) [[unlikely]]
+                return; // ignore
+
+        // Build an array of VteCell to copy to the rows
+        auto const rect_width = rect.right() - rect.left() + 1;
+        auto vec = std::vector<VteCell>{};
+        vec.reserve(rect_width);
+
+        auto cell = VteCell{.c = c, .attr = attr};
+        cell.attr.set_columns(cw);
+
+        auto frag_cell = cell;
+        frag_cell.attr.set_fragment(true);
+
+        // Fill cells with character
+        auto col = 0;
+        while (col + cw <= rect_width) {
+                vec.push_back(cell);
+                for (auto f = 1; f < cw; ++f)
+                        vec.push_back(frag_cell);
+
+                col+= cw;
+        }
+
+        // Fill the rest with erased cells
+        cell.c = 0;
+        cell.attr.set_columns(1);
+        cell.attr.set_fragment(false);
+        while (col++ < rect_width) {
+                vec.push_back(cell);
+        }
+
+        assert(vec.size() == size_t(rect_width));
+
+        // Ensure all used rows exist
+        auto rowdelta = m_screen->insert_delta + rect.bottom() - long(m_screen->row_data->next()) + 1;
+        if (rowdelta > 0) [[unlikely]] {
+                do {
+                        ring_append(false);
+                } while (--rowdelta);
+
+                adjust_adjustments();
+        }
+
+        // Now copy the cells into the ring
+
+        for (auto row = m_screen->insert_delta + rect.top();
+             row <= m_screen->insert_delta + rect.bottom();
+             ++row) {
+                auto rowdata = m_screen->row_data->index_writable(row);
+                if (!rowdata)
+                        continue;
+
+                cleanup_fragments(rowdata, row, rect.left(), rect.right() + 1);
+                _vte_row_data_fill_cells(rowdata,
+                                         rect.left(),
+                                         &basic_cell,
+                                         vec.data(),
+                                         vec.size());
+
+                // FIXME: truncate row if only erased cells at end?
+        }
+
+        /* We modified the display, so make a note of it for completeness. */
+        m_text_modified_flag = true;
+
+        emit_text_modified();
+        invalidate_all();
+}
+catch (...)
+{
+}
+
+template<class P>
+void
+Terminal::rewrite_rect(grid_rect rect,
+                       bool as_rectangle,
+                       bool only_attrs,
+                       P&& pen) noexcept
+try
+{
+        // Visit the rectangle of cells (either as a rectangle, or a stream
+        // of cells) denoted by @rect and calls @pen on each cell.
+        // Note that the bottom and right parameters in @rect are inclusive.
+
+        // Ensure all used rows exist
+        auto rowdelta = m_screen->insert_delta + rect.bottom() - long(m_screen->row_data->next()) + 1;
+        if (rowdelta > 0) [[unlikely]] {
+                do {
+                        ring_append(false);
+                } while (--rowdelta);
+
+                adjust_adjustments();
+        }
+
+
+        // If the pen will only write visual attrs, we don't need to cleanup
+        // fragments. However we do need to make sure it's not writing only
+        // the attrs for half a double-width character. If the pen does write
+        // character data, it may only write width 1 characters (unless this
+        // function is fixed to allow for that).
+
+        auto visit_row = [&](auto rownum,
+                             int left /* inclusive */,
+                             int right /* exclusive */) -> void {
+                auto rowdata = m_screen->row_data->index_writable(rownum);
+                if (!rowdata)
+                        return;
+
+                // Note that in RECTANGLE mode, changes apply to all cells in the
+                // rectangle, while in STREAM mode, changes should only be applied
+                // to non-erased cells. In the latter case, don't extend the line
+                // and make sure below to check for erased cells, as per
+                // https://gitlab.gnome.org/GNOME/vte/-/issues/2783#note_2164294
+                if (as_rectangle) {
+                        if (!_vte_row_data_ensure_len(rowdata, right))
+                                return;
+
+                        _vte_row_data_fill(rowdata, &basic_cell, left);
+
+                        auto fill = VteCell{.c = ' ', .attr = m_defaults.attr};
+                        fill.attr.set_columns(1);
+                        fill.attr.set_fragment(false);
+                        _vte_row_data_fill(rowdata, &fill, right);
+                } else {
+                        if (int(rowdata->len) <= left)
+                                return; // nothing to do
+
+                        right = std::min(right, int(rowdata->len));
+                }
+
+                if (!only_attrs)
+                        cleanup_fragments(rowdata, rownum, left, right);
+
+                auto cell = &rowdata->cells[left];
+                if (as_rectangle) {
+                        for (auto col = left; col < right; ++col, ++cell) {
+                                if (only_attrs &&
+                                    !cell->attr.fragment() &&
+                                    (col + int(cell->attr.columns()) > right)) [[unlikely]]
+                                        break;
+
+                                // When not writing character content, need to
+                                // occupy erased cells.
+                                if (cell->c == 0 && only_attrs) {
+                                        cell->c = ' '; // SPACE
+                                        cell->attr.set_fragment(false);
+                                }
+
+                                pen(cell);
+
+                        }
+
+                        _vte_row_data_expand(rowdata, right);
+                } else {
+                        for (auto col = left; col < right; ++col, ++cell) {
+                                if (cell->c == 0) // erased? skip this cell
+                                        continue;
+
+                                if (only_attrs &&
+                                    !cell->attr.fragment() &&
+                                    (col + int(cell->attr.columns()) > right)) [[unlikely]]
+                                        break;
+
+                                pen(cell);
+                        }
+                }
+        };
+
+        if (as_rectangle || rect.top() == rect.bottom()) { // as rectangle
+                for (auto row = m_screen->insert_delta + rect.top();
+                     row <= m_screen->insert_delta + rect.bottom();
+                     ++row) {
+                        visit_row(row, rect.left(), rect.right() + 1);
+                }
+        } else { // as stream (see DECSACE)
+                auto row = m_screen->insert_delta + rect.top();
+                visit_row(row++, rect.left(), m_column_count);
+                for (;
+                     row < m_screen->insert_delta + rect.bottom();
+                     ++row) {
+                        visit_row(row, 0, m_column_count);
+                }
+                visit_row(row, 0, rect.right() + 1);
+        }
+
+        /* We modified the display, so make a note of it for completeness. */
+        m_text_modified_flag = true;
+
+        emit_text_modified();
+        invalidate_all();
+}
+catch (...)
+{
 }
 
 /* Terminal::move_cursor_up:
@@ -1111,114 +1480,11 @@ Terminal::line_feed()
         maybe_apply_bidi_attributes(VTE_BIDI_FLAG_ALL);
 }
 
-/*
- * Parse parameters of SGR 38, 48 or 58, starting at @index within @seq.
- * Returns %true if @seq contained colour parameters at @index, or %false otherwise.
- * In each case, @idx is set to last consumed parameter,
- * and the colour is returned in @color.
- *
- * The format looks like:
- * - 256 color indexed palette:
- *   - ^[[38:5:INDEXm  (de jure standard: ITU-T T.416 / ISO/IEC 8613-6; we also allow and ignore further parameters)
- *   - ^[[38;5;INDEXm  (de facto standard, understood by probably all terminal emulators that support 256 colors)
- * - true colors:
- *   - ^[[38:2:[id]:RED:GREEN:BLUE[:...]m  (de jure standard: ITU-T T.416 / ISO/IEC 8613-6)
- *   - ^[[38:2:RED:GREEN:BLUEm             (common misinterpretation of the standard, FIXME: stop supporting it at some point)
- *   - ^[[38;2;RED;GREEN;BLUEm             (de facto standard, understood by probably all terminal emulators that support true colors)
- * See bugs 685759 and 791456 for details.
- */
-template<unsigned int redbits, unsigned int greenbits, unsigned int bluebits>
-bool
-Terminal::seq_parse_sgr_color(vte::parser::Sequence const& seq,
-                                        unsigned int &idx,
-                                        uint32_t& color) const noexcept
-{
-        /* Note that we don't have to check if the index is after the end of
-         * the parameters list, since dereferencing is safe and returns -1.
-         */
-
-        if (seq.param_nonfinal(idx)) {
-                /* Colon version */
-                switch (seq.param(++idx)) {
-                case VTE_SGR_COLOR_SPEC_RGB: {
-                        auto const n = seq.next(idx) - idx;
-                        if (n < 4)
-                                return false;
-                        if (n > 4) {
-                                /* Consume a colourspace parameter; it must be default */
-                                if (!seq.param_default(++idx))
-                                        return false;
-                        }
-
-                        int red = seq.param(++idx);
-                        int green = seq.param(++idx);
-                        int blue = seq.param(++idx);
-                        if ((red & 0xff) != red ||
-                            (green & 0xff) != green ||
-                            (blue & 0xff) != blue)
-                                return false;
-
-                        color = VTE_RGB_COLOR(redbits, greenbits, bluebits, red, green, blue);
-                        return true;
-                }
-                case VTE_SGR_COLOR_SPEC_LEGACY: {
-                        auto const n = seq.next(idx) - idx;
-                        if (n < 2)
-                                return false;
-
-                        int v = seq.param(++idx);
-                        if (v < 0 || v >= 256)
-                                return false;
-
-                        color = (uint32_t)v;
-                        return true;
-                }
-                }
-        } else {
-                /* Semicolon version */
-
-                idx = seq.next(idx);
-                switch (seq.param(idx)) {
-                case VTE_SGR_COLOR_SPEC_RGB: {
-                        /* Consume 3 more parameters */
-                        idx = seq.next(idx);
-                        int red = seq.param(idx);
-                        idx = seq.next(idx);
-                        int green = seq.param(idx);
-                        idx = seq.next(idx);
-                        int blue = seq.param(idx);
-
-                        if ((red & 0xff) != red ||
-                            (green & 0xff) != green ||
-                            (blue & 0xff) != blue)
-                                return false;
-
-                        color = VTE_RGB_COLOR(redbits, greenbits, bluebits, red, green, blue);
-                        return true;
-                }
-                case VTE_SGR_COLOR_SPEC_LEGACY: {
-                        /* Consume 1 more parameter */
-                        idx = seq.next(idx);
-                        int v = seq.param(idx);
-
-                        if ((v & 0xff) != v)
-                                return false;
-
-                        color = (uint32_t)v;
-                        return true;
-                }
-                }
-        }
-
-        return false;
-}
-
 void
 Terminal::erase_in_display(vte::parser::Sequence const& seq)
 {
-        /* We don't implement the protected attribute, so we can ignore selective:
-         * bool selective = (seq.command() == VTE_CMD_DECSED);
-         */
+        // We don't implement the protected attribute, so we can ignore selective:
+        auto selective = (seq.command() == VTE_CMD_DECSED);
 
         switch (seq.collect1(0)) {
         case -1: /* default */
@@ -1238,7 +1504,10 @@ Terminal::erase_in_display(vte::parser::Sequence const& seq)
                 clear_screen();
 		break;
         case 3:
-                /* Drop the scrollback. */
+                if (selective)
+                        break;
+
+                /* Drop the scrollback (only for ED) */
                 drop_scrollback();
                 break;
 	default:
@@ -1276,148 +1545,116 @@ Terminal::erase_in_line(vte::parser::Sequence const& seq)
         m_text_deleted_flag = TRUE;
 }
 
-bool
-Terminal::get_osc_color_index(int osc,
-                                        int value,
-                                        int& index) const noexcept
-{
-        if (value < 0)
-                return false;
-
-        if (osc == VTE_OSC_XTERM_SET_COLOR ||
-            osc == VTE_OSC_XTERM_RESET_COLOR) {
-                if (value < VTE_DEFAULT_FG) {
-                        index = value;
-                        return true;
-                }
-
-                index = value - VTE_DEFAULT_FG;
-        } else {
-                index = value;
-        }
-
-        /* Translate OSC 5 numbers to color index.
-         *
-         * We return -1 for known but umimplemented special colors
-         * so that we can send a dummy reply when queried.
-         */
-        switch (index) {
-        case 0: index = VTE_BOLD_FG; return true; /* Bold */
-        case 1: index = -1; return true; /* Underline */
-        case 2: index = -1; return true; /* Blink */
-        case 3: index = -1; return true; /* Reverse */
-        case 4: index = -1; return true; /* Italic */
-        default: return false;
-        }
-}
-
 void
 Terminal::set_color(vte::parser::Sequence const& seq,
-                              vte::parser::StringTokeniser::const_iterator& token,
-                              vte::parser::StringTokeniser::const_iterator const& endtoken,
-                              int osc) noexcept
+                    vte::parser::StringTokeniser::const_iterator& token,
+                    vte::parser::StringTokeniser::const_iterator const& endtoken,
+                    osc_colors::OSCValuedColorSequenceKind osc_kind,
+                    int osc) noexcept
 {
         while (token != endtoken) {
-                int value;
-                bool has_value = token.number(value);
+                auto const value = token.number();
 
                 if (++token == endtoken)
                         break;
 
-                int index;
-                if (!has_value ||
-                    !get_osc_color_index(osc, value, index)) {
-                        ++token;
+                if (!value) {
+                        ++token; // skip the colour param
                         continue;
                 }
 
-                set_color_index(seq, token, endtoken, value, index, -1, osc);
+                if (auto const index = OSCColorIndex::from_sequence(osc_kind, *value))
+                        set_color_index(seq, token, endtoken, value, *index, osc);
+
                 ++token;
         }
 }
 
 void
 Terminal::set_color_index(vte::parser::Sequence const& seq,
-                                    vte::parser::StringTokeniser::const_iterator& token,
-                                    vte::parser::StringTokeniser::const_iterator const& endtoken,
-                                    int number,
-                                    int index,
-                                    int index_fallback,
-                                    int osc) noexcept
+                          vte::parser::StringTokeniser::const_iterator& token,
+                          vte::parser::StringTokeniser::const_iterator const& endtoken,
+                          std::optional<int> number,
+                          OSCColorIndex index,
+                          int osc) noexcept
 {
         auto const str = *token;
 
         if (str == "?"s) {
-                vte::color::rgb color{0, 0, 0};
-                if (index != -1) {
-                        auto const* c = get_color(index);
-                        if (c == nullptr && index_fallback != -1)
-                                c = get_color(index_fallback);
-                        if (c != nullptr)
-                                color = *c;
-                }
+                auto const color = resolve_reported_color(index).value_or(vte::color::rgb{0, 0, 0});
 
-                if (number != -1)
-                        reply(seq, VTE_REPLY_OSC, {}, "%d;%d;rgb:%04x/%04x/%04x",
-                              osc, number, color.red, color.green, color.blue);
+                if (number)
+                        reply(seq,
+                              vte::parser::reply::OSC().
+                              format("{};{};rgb:{:04x}/{:04x}/{:04x}",
+                                     osc, *number, color.red, color.green, color.blue));
                 else
-                        reply(seq, VTE_REPLY_OSC, {}, "%d;rgb:%04x/%04x/%04x",
-                              osc, color.red, color.green, color.blue);
+                        reply(seq,
+                              vte::parser::reply::OSC().
+                              format("{};rgb:{:04x}/{:04x}/{:04x}",
+                                     osc, color.red, color.green, color.blue));
         } else {
                 vte::color::rgb color;
 
-                if (index != -1 &&
+                if (index.kind() == OSCColorIndexKind::Palette &&
                     color.parse(str.data())) {
-                        set_color(index, VTE_COLOR_SOURCE_ESCAPE, color);
+                        set_color(index.palette_index(), ColorSource::Escape, color);
                 }
         }
+}
+
+auto
+Terminal::resolve_reported_color(osc_colors::OSCColorIndex index) const noexcept -> std::optional<vte::color::rgb>
+{
+        if (index.kind() == OSCColorIndexKind::Palette) {
+                if (auto const color = get_color_opt(index.palette_index()))
+                        return color;
+        }
+
+        if (auto const fallback_index = index.fallback_palette_index())
+                return get_color_opt(*fallback_index);
+
+        return std::nullopt;
 }
 
 void
 Terminal::set_special_color(vte::parser::Sequence const& seq,
                                       vte::parser::StringTokeniser::const_iterator& token,
                                       vte::parser::StringTokeniser::const_iterator const& endtoken,
-                                      int index,
-                                      int index_fallback,
-                                      int osc) noexcept
+                                      const ColorPaletteIndex index,
+                                      const int osc) noexcept
 {
         if (token == endtoken)
                 return;
 
-        set_color_index(seq, token, endtoken, -1, index, index_fallback, osc);
+        set_color_index(seq, token, endtoken, std::nullopt, index, osc);
 }
 
 void
 Terminal::reset_color(vte::parser::Sequence const& seq,
                                 vte::parser::StringTokeniser::const_iterator& token,
                                 vte::parser::StringTokeniser::const_iterator const& endtoken,
-                                int osc) noexcept
+                                const osc_colors::OSCValuedColorSequenceKind osc_kind) noexcept
 {
         /* Empty param? Reset all */
         if (token == endtoken ||
             token.size_remaining() == 0) {
-                if (osc == VTE_OSC_XTERM_RESET_COLOR) {
-                        for (unsigned int idx = 0; idx < VTE_DEFAULT_FG; idx++)
-                                reset_color(idx, VTE_COLOR_SOURCE_ESCAPE);
+                if (osc_kind == OSCValuedColorSequenceKind::XTermColor) {
+                        for (auto idx = 0; idx < VTE_DEFAULT_FG; idx++)
+                                reset_color(idx, ColorSource::Escape);
                 }
 
-                reset_color(VTE_BOLD_FG, VTE_COLOR_SOURCE_ESCAPE);
+                reset_color(ColorPaletteIndex::bold_fg(), ColorSource::Escape);
                 /* Add underline/blink/reverse/italic here if/when implemented */
 
                 return;
         }
 
         while (token != endtoken) {
-                int value;
-                if (!token.number(value)) {
-                        ++token;
-                        continue;
-                }
-
-                int index;
-                if (get_osc_color_index(osc, value, index) &&
-                    index != -1) {
-                        reset_color(index, VTE_COLOR_SOURCE_ESCAPE);
+                if (auto const value = token.number()) {
+                        if (auto index = OSCColorIndex::from_sequence(osc_kind, *value))
+                                if (index->kind() == OSCColorIndexKind::Palette)
+                                        reset_color(index->palette_index(), ColorSource::Escape);
                 }
 
                 ++token;
@@ -1425,48 +1662,58 @@ Terminal::reset_color(vte::parser::Sequence const& seq,
 }
 
 void
-Terminal::set_current_directory_uri(vte::parser::Sequence const& seq,
-                                              vte::parser::StringTokeniser::const_iterator& token,
-                                              vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept
+Terminal::set_termprop_uri(vte::parser::Sequence const& seq,
+                           vte::parser::StringTokeniser::const_iterator& token,
+                           vte::parser::StringTokeniser::const_iterator const& endtoken,
+                           int termprop_id,
+                           PendingChanges legacy_pending_change) noexcept
 {
-        std::string uri;
-        if (token != endtoken && token.size_remaining() > 0) {
-                uri = token.string_remaining();
+        auto const info = m_termprops.registry().lookup(termprop_id);
+        assert(info);
 
-                auto filename = g_filename_from_uri(uri.data(), nullptr, nullptr);
-                if (filename != nullptr) {
-                        g_free(filename);
-                } else {
-                        /* invalid URI */
-                        uri.clear();
+        auto set = false;
+        if (token != endtoken && token.size_remaining() > 0) {
+                auto const str = token.string_remaining();
+
+                // Only parse the URI if the termprop doesn't already have the
+                // same string value
+                if (auto const old_value = m_termprops.value(*info);
+                    !old_value ||
+                    !std::holds_alternative<vte::property::URIValue>(*old_value) ||
+                    std::get<vte::property::URIValue>(*old_value).second != str) {
+
+                        if (auto uri = vte::take_freeable(g_uri_parse(str.c_str(),
+                                                                      GUriFlags(G_URI_FLAGS_ENCODED),
+                                                                      nullptr));
+                            uri &&
+                            g_strcmp0(g_uri_get_scheme(uri.get()), "file") == 0) {
+
+                                set = true;
+                                m_termprops.dirty(info->id()) = true;
+                                *m_termprops.value(info->id()) =
+                                        vte::property::Value{std::in_place_type<vte::property::URIValue>,
+                                                                     std::move(uri),
+                                                                     str};
+                        } else {
+                                // invalid URI, or not a file: URI
+                                set = true;
+                                reset_termprop(*info);
+                        }
+                }
+        } else {
+                // Only reset the termprop if it's not already reset
+                if (auto const old_value = m_termprops.value(*info);
+                    !old_value ||
+                    !std::holds_alternative<std::monostate>(*old_value)) {
+                        set = true;
+                        reset_termprop(*info);
                 }
         }
 
-        m_current_directory_uri_pending.swap(uri);
-        m_pending_changes |= vte::to_integral(PendingChanges::CWD);
-}
-
-void
-Terminal::set_current_file_uri(vte::parser::Sequence const& seq,
-                                         vte::parser::StringTokeniser::const_iterator& token,
-                                         vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept
-
-{
-        std::string uri;
-        if (token != endtoken && token.size_remaining() > 0) {
-                uri = token.string_remaining();
-
-                auto filename = g_filename_from_uri(uri.data(), nullptr, nullptr);
-                if (filename != nullptr) {
-                        g_free(filename);
-                } else {
-                        /* invalid URI */
-                        uri.clear();
-                }
+        if (set) {
+                m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS) |
+                        vte::to_integral(legacy_pending_change);
         }
-
-        m_current_file_uri_pending.swap(uri);
-        m_pending_changes |= vte::to_integral(PendingChanges::CWF);
 }
 
 void
@@ -1499,7 +1746,8 @@ Terminal::set_current_hyperlink(vte::parser::Sequence const& seq,
                         continue;
 
                 if (len > 3 + VTE_HYPERLINK_ID_LENGTH_MAX) {
-                        _vte_debug_print (VTE_DEBUG_HYPERLINK, "Overlong \"id\" ignored: \"%s\"\n",
+                        _vte_debug_print (vte::debug::category::HYPERLINK,
+                                          "Overlong \"id\" ignored: \"{}\"",
                                           subtoken.data());
                         break;
                 }
@@ -1515,7 +1763,9 @@ Terminal::set_current_hyperlink(vte::parser::Sequence const& seq,
                 char idbuf[24];
                 auto len = g_snprintf(idbuf, sizeof(idbuf), ":%ld", m_hyperlink_auto_id++);
                 hyperlink.append(idbuf, len);
-                _vte_debug_print (VTE_DEBUG_HYPERLINK, "Autogenerated id=\"%s\"\n", hyperlink.data());
+                _vte_debug_print (vte::debug::category::HYPERLINK,
+                                  "Autogenerated id=\"{}\"",
+                                  hyperlink.data());
         }
 
         /* Now get the URI */
@@ -1528,12 +1778,16 @@ Terminal::set_current_hyperlink(vte::parser::Sequence const& seq,
         if (len > 0 && len <= VTE_HYPERLINK_URI_LENGTH_MAX) {
                 token.append_remaining(hyperlink);
 
-                _vte_debug_print (VTE_DEBUG_HYPERLINK, "OSC 8: id;uri=\"%s\"\n", hyperlink.data());
+                _vte_debug_print (vte::debug::category::HYPERLINK,
+                                  "OSC 8: id;uri=\"{}\""
+                                  , hyperlink.data());
 
                 idx = m_screen->row_data->get_hyperlink_idx(hyperlink.data());
         } else {
                 if (G_UNLIKELY(len > VTE_HYPERLINK_URI_LENGTH_MAX))
-                        _vte_debug_print (VTE_DEBUG_HYPERLINK, "Overlong URI ignored (len %" G_GSIZE_FORMAT ")\n", len);
+                        _vte_debug_print (vte::debug::category::HYPERLINK,
+                                          "URI length {} is overlong, ignoring",
+                                          len);
 
                 /* idx = 0; also remove the previous current_idx so that it can be GC'd now. */
                 idx = m_screen->row_data->get_hyperlink_idx(nullptr);
@@ -1571,6 +1825,464 @@ Terminal::set_current_shell_integration_mode(vte::parser::Sequence const& seq,
                         maybe_apply_bidi_attributes(VTE_BIDI_FLAG_ALL);
                 }
         }
+}
+
+#if VTE_DEBUG
+
+void
+Terminal::reply_termprop_query(vte::parser::Sequence const& seq,
+                               vte::property::Registry::Property const* info)
+{
+        // Since this is only used in test mode, we just send one
+        // OSC reply per query, instead of trying to consolidate
+        // multiple replies into as few OSCs as possible.
+
+        auto str = std::string{info->name()};
+        switch (info->type()) {
+                using enum vte::property::Type;
+        case VALUELESS:
+                if (m_termprops.dirty(info->id()))
+                        str.push_back('!');
+                break;
+
+        default:
+                if (auto const vstr =
+                    vte::property::unparse_termprop_value(info->type(),
+                                                          *m_termprops.value(info->id()))) {
+                        str.push_back('=');
+                        str.append(*vstr);
+                }
+        }
+
+        reply(seq,
+              vte::parser::reply::OSC().
+              format("{};{}", int(VTE_OSC_VTE_TERMPROP), str));
+}
+
+#endif // VTE_DEBUG
+
+void
+Terminal::parse_termprop(vte::parser::Sequence const& seq,
+                         std::string_view const& str,
+                         bool& set,
+                         bool& query) noexcept
+try
+{
+        auto const pos = str.find_first_of("=?!"); // possibly str.npos
+        auto const info = m_termprops.registry().lookup(str.substr(0, pos));
+
+        // No-OSC termprops cannot be set via the termprop OSC, but they
+        // can be queried and reset
+        auto const no_osc = info &&
+                (unsigned(info->flags()) & unsigned(vte::property::Flags::NO_OSC)) != 0;
+        // Valueless termprops are special in that they can only be
+        // emitted or reset, and resetting cancels the emission
+        auto const is_valueless = info &&
+                info->type() == vte::property::Type::VALUELESS;
+
+        if (pos == str.npos) {
+                // Reset
+                //
+                // Allow reset even for no-OSC termprops
+                if (info &&
+                    !std::holds_alternative<std::monostate>(*m_termprops.value(info->id()))) {
+                        set = true;
+                        m_termprops.dirty(info->id()) = !is_valueless;
+                        *m_termprops.value(info->id()) = {};
+                }
+
+                // Prefix reset
+                // Reset all termprops whose name starts with the prefix
+                else if (!info && str.ends_with('.')) {
+                        for (auto const& prop_info : m_termprops.registry().get_all()) {
+                                if (!std::string_view{prop_info.name()}.starts_with(str))
+                                        continue;
+
+                                if (!std::holds_alternative<std::monostate>(*m_termprops.value(prop_info.id()))) {
+                                        set = true;
+                                        m_termprops.dirty(prop_info.id()) = prop_info.type() != vte::property::Type::VALUELESS;
+                                        *m_termprops.value(prop_info.id()) = {};
+                                }
+                        }
+                }
+        } else if (str[pos] == '=' &&
+                   info &&
+                   !is_valueless &&
+                   !no_osc) {
+                if (auto value = info->parse(str.substr(pos + 1))) {
+                        // Set
+                        if (value != *m_termprops.value(info->id())) {
+                                set = true;
+                                *m_termprops.value(info->id()) = std::move(*value);
+                                m_termprops.dirty(info->id()) = true;
+                        }
+                } else {
+                        // Reset
+                        if (!std::holds_alternative<std::monostate>(*m_termprops.value(info->id()))) {
+                                set = true;
+                                *m_termprops.value(info->id()) = {};
+                                m_termprops.dirty(info->id()) = true;
+                        }
+                }
+        } else if (str[pos] == '?') {
+                if ((pos + 1) == str.size()) {
+                        // Query
+                        //
+                        // In test mode, do reply to the query. In non-test mode,
+                        // just set a flag and send a single dummy reply afterwards.
+                        //
+                        // Allow query even for no-OSC termprops and even unregistered
+                        // termprops, for forward compatibility.
+#if VTE_DEBUG
+                        if (info && (g_test_flags & VTE_TEST_FLAG_TERMPROP) != 0) {
+                                reply_termprop_query(seq, info);
+                        } else
+#endif
+                        query = true;
+                }
+        } else if (str[pos] == '!') {
+                if ((pos + 1) == str.size() &&
+                    info &&
+                    is_valueless &&
+                    !no_osc &&
+                    !m_termprops.dirty(info->id())) {
+                        // Signal
+                        set = true;
+                        m_termprops.dirty(info->id()) = true;
+                        // no need to set/reset the value
+                }
+        }
+}
+catch (...)
+{
+        set = true; // something may have happened already
+}
+
+void
+Terminal::vte_termprop(vte::parser::Sequence const& seq,
+                       vte::parser::StringTokeniser::const_iterator& token,
+                       vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept
+try
+{
+        // This is a new and vte-only feature, so reject BEL-terminated OSC.
+        if (seq.is_st_bel()) {
+                token = endtoken;
+                return;
+        }
+
+        auto set = false, query = false;
+        auto queries = std::vector<int>{};
+        while (token != endtoken) {
+                parse_termprop(seq, *token, set, query);
+                ++token;
+        }
+
+        if (set) {
+                // https://gitlab.gnome.org/GNOME/vte/-/issues/2125#note_1155148
+                // mentions that we may want to break out of processing input now
+                // and dispatch the changed notification immediately. However,
+                // (at least for now) it's better not to give that guarantee, and
+                // instead make this asynchronous (and thus also automatically
+                // rate-limited). Also, due to the documented prohibition of
+                // calling any API on VteTerminal except the termprop value
+                // retrieval functions, this should not be further limiting.
+
+                m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS);
+        }
+
+        if (query) {
+                // Reserved for future extension. Reply with an empty
+                // termprop set statement for forward compatibility.
+
+                reply(seq,
+                      vte::parser::reply::OSC().
+                      format("{}", int(VTE_OSC_VTE_TERMPROP)));
+        }
+}
+catch (...)
+{
+        // nothing to do here
+}
+
+void
+Terminal::urxvt_extension(vte::parser::Sequence const& seq,
+                          vte::parser::StringTokeniser::const_iterator& token,
+                          vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept
+try
+{
+        if (!enable_legacy_osc777())
+                return;
+
+        if (token == endtoken)
+                return;
+
+        auto maybe_set_termprop_void = [&](int prop,
+                                           bool set = true) -> void {
+                if (auto const info = m_termprops.registry().lookup(prop);
+                    info && info->type() == vte::property::Type::VALUELESS) {
+                        m_termprops.dirty(info->id()) = set;
+                        *m_termprops.value(info->id()) = {};
+                        m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS);
+                }
+        };
+
+        auto maybe_set_termprop = [&](int prop,
+                                      auto&& value) -> void {
+                auto propvalue = vte::property::Value{std::move(value)};
+                if (auto const info = m_termprops.registry().lookup(prop);
+                    info &&
+                    propvalue != *m_termprops.value(info->id())) {
+                        m_termprops.dirty(info->id()) = true;
+                        *m_termprops.value(info->id()) = std::move(propvalue);
+                        m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS);
+                }
+        };
+
+        auto maybe_reset_termprop = [&](int prop) -> void {
+                if (auto const info = m_termprops.registry().lookup(prop);
+                    info &&
+                    !std::holds_alternative<std::monostate>(*m_termprops.value(info->id()))) {
+                        m_termprops.dirty(info->id()) = true;
+                        *m_termprops.value(info->id()) = {};
+                        m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS);
+                }
+        };
+
+        auto const cmd = *token;
+        if (cmd == "precmd") {
+                maybe_set_termprop_void(VTE_PROPERTY_ID_SHELL_PRECMD);
+
+        } else if (cmd == "preexec") {
+                maybe_set_termprop_void(VTE_PROPERTY_ID_SHELL_PREEXEC);
+
+        } else if (cmd == "notify") {
+                if (++token == endtoken)
+                        return;
+
+                if (*token != "Command completed")
+                        return;
+
+                maybe_set_termprop_void(VTE_PROPERTY_ID_SHELL_POSTEXEC);
+
+        } else if (cmd == "container") {
+
+                if (++token == endtoken)
+                        return;
+
+                auto const subcmd = *token;
+                if (subcmd != "pop" && subcmd != "push")
+                        return;
+
+                // Note: There is no stack of values anymore.
+
+                // Reset container termprops so we don't get inconsistent
+                // values with incomplete sequences below.
+                maybe_reset_termprop(VTE_PROPERTY_ID_CONTAINER_NAME);
+                maybe_reset_termprop(VTE_PROPERTY_ID_CONTAINER_RUNTIME);
+                maybe_reset_termprop(VTE_PROPERTY_ID_CONTAINER_UID);
+
+                if (subcmd == "push") {
+                        if (++token == endtoken)
+                                return;
+
+                        maybe_set_termprop(VTE_PROPERTY_ID_CONTAINER_NAME, *token);
+
+                        if (++token == endtoken)
+                                return;
+
+                        maybe_set_termprop(VTE_PROPERTY_ID_CONTAINER_RUNTIME, *token);
+
+                        if (++token == endtoken)
+                                return;
+
+                        if (auto value = vte::property::parse_termprop_value(vte::property::Type::UINT, *token)) {
+                                maybe_set_termprop(VTE_PROPERTY_ID_CONTAINER_UID, *value);
+                        }
+
+                } else if (subcmd == "pop") {
+                        // already reset above
+                }
+        }
+}
+catch (...)
+{
+        // nothing to do here
+}
+
+// Terminal::conemu_extension:
+//
+// Parse a ConEmu OSC 9 sequence.
+//
+// Only the "9 ; 4" subfunction to set a progress state is implemented by vte,
+// and sets the %VTE_TERMPROP_PROGRESS termprop, either to a value between 0 and
+// 100, or to -1 for an indeterminate progress. "Paused" and "error" progress states
+// are mapped to an unset termprop.
+//
+// References: ConEmu [https://github.com/ConEmu/ConEmu.github.io/blob/master/_includes/AnsiEscapeCodes.md#ConEmu_specific_OSC]
+//
+void
+Terminal::conemu_extension(vte::parser::Sequence const& seq,
+                           vte::parser::StringTokeniser::const_iterator& token,
+                           vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept
+try
+{
+        // Note: while this is a conemu OSC, and conemu allows BEL
+        // termination, this is also just getting really adopted
+        // outside conemu. Let's treat this as a "new" thing and
+        // not allow BEL termination here.
+        if (seq.is_st_bel())
+                return;
+
+        if (token == endtoken)
+                return;
+
+        auto maybe_set_termprop = [&](int prop,
+                                      auto&& value) -> void {
+                auto propvalue = vte::property::Value{std::move(value)};
+                if (auto const info = m_termprops.registry().lookup(prop);
+                    info &&
+                    propvalue != *m_termprops.value(info->id())) {
+                        m_termprops.dirty(info->id()) = true;
+                        *m_termprops.value(info->id()) = std::move(propvalue);
+                        m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS);
+                }
+        };
+
+        auto maybe_reset_termprop = [&](int prop) -> void {
+                if (auto const info = m_termprops.registry().lookup(prop);
+                    info &&
+                    !std::holds_alternative<std::monostate>(*m_termprops.value(info->id()))) {
+                        m_termprops.dirty(info->id()) = true;
+                        *m_termprops.value(info->id()) = {};
+                        m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS);
+                }
+        };
+
+        auto const subfunction = token.number();
+        ++token;
+
+        switch (subfunction.value_or(0)) {
+        case 4: { // progress
+                auto const st = (token != endtoken) ? token.number() : 0;
+                if (token != endtoken)
+                        ++token;
+
+                auto const pr = (token != endtoken) ? token.number().value_or(0) : 0;
+
+                switch (st.value_or(0)) {
+                case 0: // reset
+                        maybe_reset_termprop(VTE_PROPERTY_ID_PROGRESS_HINT);
+                        maybe_reset_termprop(VTE_PROPERTY_ID_PROGRESS_VALUE);
+                        return;
+
+                case 1: // running
+                        maybe_set_termprop(VTE_PROPERTY_ID_PROGRESS_HINT,
+                                           int64_t(VTE_PROGRESS_HINT_ACTIVE));
+                        maybe_set_termprop(VTE_PROPERTY_ID_PROGRESS_VALUE,
+                                           uint64_t(pr));
+                        return;
+
+                case 2: // error
+                        maybe_set_termprop(VTE_PROPERTY_ID_PROGRESS_HINT,
+                                           int64_t(VTE_PROGRESS_HINT_ERROR));
+                        maybe_set_termprop(VTE_PROPERTY_ID_PROGRESS_VALUE,
+                                           uint64_t(pr));
+                        return;
+
+                case 3: // indeterminate
+                        maybe_set_termprop(VTE_PROPERTY_ID_PROGRESS_HINT,
+                                           int64_t(VTE_PROGRESS_HINT_INDETERMINATE));
+                        maybe_set_termprop(VTE_PROPERTY_ID_PROGRESS_VALUE,
+                                           uint64_t(0));
+                        return;
+
+                case 4: // paused
+                        maybe_set_termprop(VTE_PROPERTY_ID_PROGRESS_HINT,
+                                           int64_t(VTE_PROGRESS_HINT_PAUSED));
+                        maybe_set_termprop(VTE_PROPERTY_ID_PROGRESS_VALUE,
+                                           uint64_t(pr));
+                        return;
+
+                case 5: // long running start, not implemented
+                case 6: // long running end, not implemented
+                default: // unkown
+                        return;
+                }
+        }
+
+        default: // other subfunctions not implemented in vte
+                return;
+        }
+}
+catch (...)
+{
+        // nothing to do here
+}
+
+// collect_rect:
+// @seq:
+// @idx:
+//
+// Collects a rectangle from the parameters of @seq at @idx.
+// @idx will be advanced to the first parameter after the rect.
+//
+// As per the DEC documentation for DECCRA, DECFRA, CEDERA, DECSERA, DECCARA,
+// DECRARA, and DECRQCRA, the rectangle consists of 4 (final) parameters, in
+// order, the coordinates of the top, left, bottom, and right edges of the
+// rectangle, and are clamped to the number of lines for top, and bottom; and
+// to the number of columns for left, and right.
+//
+// The documentation says that
+// "The coordinates of the rectangular area are affected by the setting of
+// Origin Mode. This control is not otherwise affected by the margins."
+// which one might interpret as the rectangle not being clipped by the
+// scrolling margins; however a different interpretation (and one that is
+// confirmed by testing an actual VT420 terminal) is that "otherwise" refers
+// to DECOM, i.e. the function is unaffected by the margins iff DECOM is reset.
+// In origin mode, the coordinates are clamped to the scrolling region, so that
+// a rectangle completely outside the scrolling region is brought inside the
+// scrolling region as a single line and/or column. See the discussion in
+// https://gitlab.gnome.org/GNOME/vte/-/issues/2783 .
+//
+// The parameters admit default values, which are 1 for the top and left
+// parameters, the number of lines in the current page for the bottom parameter,
+// and the number of columns for the right parameter.
+// Top must be less or equal to bottom, and left must be less or equal to right.
+//
+// Returns: the (possibly empty) rectangle
+//
+// References: DEC STD 070 page 5-168 ff
+//             DEC VT525
+//
+vte::grid_rect
+Terminal::collect_rect(vte::parser::Sequence const& seq,
+                       unsigned& idx) noexcept
+{
+        // Param values are 1-based; directly translate to 0-based
+        auto top = seq.collect1(idx, 1, 1, m_row_count) - 1;
+        idx = seq.next(idx);
+        auto left = seq.collect1(idx, 1, 1, m_column_count) - 1;
+        idx = seq.next(idx);
+        auto bottom = seq.collect1(idx, m_row_count, 1, m_row_count) - 1;
+        idx = seq.next(idx);
+        auto right = seq.collect1(idx, m_column_count, 1, m_column_count) - 1;
+        idx = seq.next(idx);
+
+        auto rect = grid_rect{left, top, right, bottom};
+        if (m_modes_private.DEC_ORIGIN()) {
+                // Translate to and intersect with the scrolling region
+                rect += m_scrolling_region.origin();
+                rect.intersect_or_extend(m_scrolling_region.as_rect());
+        }
+        #if 0
+        // unnecessary since the coords were already clipped above
+        else {
+                // clip to the whole screen
+                rect &= grid_rect{0, 0, int(m_column_count) - 1, int(m_row_count) - 1};
+        }
+        #endif
+
+        return rect;
 }
 
 /*
@@ -2279,6 +2991,7 @@ Terminal::DA1(vte::parser::Sequence const& seq)
          *       TODO: ?
          *   24: Turkish
          *       TODO: ?
+         *   28: rectangular editing
          *   29: DECterm text locator
          *       TODO: ?
          *   42: ISO Latin-2 character set
@@ -2309,12 +3022,14 @@ Terminal::DA1(vte::parser::Sequence const& seq)
         // See https://gitlab.gnome.org/GNOME/vte/-/issues/2724
         auto const level = g_test_flags ? 65 : 61;
 
-        reply(seq, VTE_REPLY_DECDA1R,
-              {level,
-               1, // 132-column mode
-               21, // horizontal scrolling
-               22 // colour text
-              });
+        reply(seq,
+              vte::parser::reply::DECDA1R().
+              append_params({level,
+                              1, // 132-column mode
+                              21, // horizontal scrolling
+                              22, // colour text
+                              28 // rectangular editing
+                      }));
 }
 
 void
@@ -2351,7 +3066,9 @@ Terminal::DA2(vte::parser::Sequence const& seq)
         // See https://gitlab.gnome.org/GNOME/vte/-/issues/2724
         auto const level = g_test_flags ? 65 : 61;
 
-        reply(seq, VTE_REPLY_DECDA2R, {level, firmware_version(), 1});
+        reply(seq,
+              vte::parser::reply::DECDA2R().
+              append_params({level, firmware_version(), 1}));
 }
 
 void
@@ -2362,7 +3079,7 @@ Terminal::DA3(vte::parser::Sequence const& seq)
          * The tertiary DA is used to query the terminal-ID.
          *
          * Reply: DECRPTUI
-         *   DATA: four pairs of are hexadecimal number, encoded 4 bytes.
+         *   DATA: four pairs of hexadecimal digits, encoded 4 bytes.
          *   The first byte denotes the manufacturing site, the remaining
          *   three is the terminal's ID.
          *
@@ -2372,7 +3089,9 @@ Terminal::DA3(vte::parser::Sequence const& seq)
         if (seq.collect1(0, 0) != 0)
                 return;
 
-        reply(seq, VTE_REPLY_DECRPTUI, {});
+        reply(seq,
+              vte::parser::reply::DECRPTUI().
+              set_string(vte::base16_encode("~VTE"sv)));
 }
 
 void
@@ -2516,37 +3235,17 @@ Terminal::DECALN(vte::parser::Sequence const& seq)
          * with 'E's.
          *
          * References: VT525
+         *             DEC STD 070
          */
 
+        m_defaults = m_color_defaults = basic_cell;
         m_scrolling_region.reset();
         m_modes_private.set_DEC_ORIGIN(false);
         home_cursor();
 
-	for (auto row = m_screen->insert_delta;
-	     row < m_screen->insert_delta + m_row_count;
-	     row++) {
-		/* Find this row. */
-                while (long(m_screen->row_data->next()) <= row)
-                        ring_append(false);
-                adjust_adjustments();
-                auto rowdata = m_screen->row_data->index_writable(row);
-		g_assert(rowdata != NULL);
-		/* Clear this row. */
-		_vte_row_data_shrink (rowdata, 0);
-
-                emit_text_deleted();
-		/* Fill this row. */
-                VteCell cell;
-		cell.c = 'E';
-		cell.attr = basic_cell.attr;
-		cell.attr.set_columns(1);
-                _vte_row_data_fill(rowdata, &cell, m_column_count);
-                emit_text_inserted();
-	}
-        invalidate_all();
-
-	/* We modified the display, so make a note of it for completeness. */
-        m_text_modified_flag = TRUE;
+        fill_rect({0, 0, int(m_column_count) - 1, int(m_row_count) - 1},
+                  U'E',
+                  m_defaults.attr);
 }
 
 void
@@ -2648,18 +3347,54 @@ Terminal::DECCARA(vte::parser::Sequence const& seq)
          *
          * If the top > bottom or left > right, the command is ignored.
          *
-         * These coordinates are interpreted according to origin mode (DECOM),
-         * but unaffected by the page margins (DECSLRM?). Current SGR defaults
-         * and cursor position are unchanged.
+         * These coordinates are interpreted according to origin mode (DECOM).
+         * Current SGR defaults and cursor position are unchanged.
+         * If no parameters after arg[3] are set, clears all attributes (like SGR 0).
          *
          * Note: DECSACE selects whether this function operates on the
-         * rectangular area or the data stream between the star and end
+         * rectangular area or the data stream between the start and end
          * positions.
          *
-         * References: VT525
-         *
-         * Probably not worth implementing.
+         * References: DEC STD 070 page 5-173 f
+         *             VT525
          */
+
+        auto idx = 0u;
+        auto const rect = collect_rect(seq, idx);
+        if (!rect)
+                return;
+
+        // Parse the SGR attributes twice, applying them first to
+        // an all-unset attr, then to an all-set attr. Combining these
+        // obtains a mask and a value that can be applied to each
+        // cell's attrs to set them to their new value while preserving
+        // any attrs not mentioned in the SGR attributes.
+
+        auto const sgr_idx = idx; // save index
+        auto empty = VteCellAttr{.attr = 0, .m_colors = 0};
+        vte::parser::collect_sgr(seq, idx, empty);
+
+        idx = sgr_idx; // restore index
+        auto full = VteCellAttr{.attr = ~uint32_t{0}, .m_colors = ~uint64_t{0}};
+        vte::parser::collect_sgr(seq, idx, full);
+
+        auto const attr_mask = (full.attr & ~empty.attr & VTE_ATTR_ALL_SGR_MASK)
+                | ~VTE_ATTR_ALL_SGR_MASK; // make sure not to change non-visual attrs
+        auto const attr = empty.attr;
+        auto const colors_mask = full.m_colors & ~empty.m_colors;
+        auto const colors = empty.m_colors;
+
+        rewrite_rect(rect,
+                     m_decsace_is_rectangle,
+                     true, // only writing attrs
+                     [&](VteCell* cell) constexpr noexcept -> void {
+                             auto& cell_attr = cell->attr;
+                             cell_attr.attr &= attr_mask;
+                             cell_attr.attr ^= attr;
+
+                             cell_attr.m_colors &= colors_mask;
+                             cell_attr.m_colors ^= colors;
+                     });
 }
 
 void
@@ -2685,7 +3420,9 @@ Terminal::DECCRA(vte::parser::Sequence const& seq)
          *
          * Arguments;
          *   args[0..3]: top, left, bottom, right of the source rectangle (1-based)
-         *   args[4..7]: top, left, bottom, right of the target rectangle (1-based)
+         *   args[4]: source page
+         *   args[5..6]: top, left of the target rectangle
+         *   args[7]: target page
          *
          * Defaults:
          *   args[0]: 1
@@ -2694,24 +3431,55 @@ Terminal::DECCRA(vte::parser::Sequence const& seq)
          *   args[3]: width of current page
          *   args[4]: 1
          *   args[5]: 1
-         *   args[6]: height of current page
-         *   args[7]: width of current page
+         *   args[6]: 1
+         *   args[7]: 1
          *
          * If the top > bottom or left > right for either of the rectangles,
          * the command is ignored.
          *
-         * These coordinates are interpreted according to origin mode (DECOM),
-         * but unaffected by the page margins (DECSLRM?). Current SGR defaults
-         * and cursor position are unchanged.
+         * These coordinates are interpreted according to origin mode (DECOM).
+         * Current SGR defaults and cursor position are unchanged.
          *
-         * Note: DECSACE selects whether this function operates on the
-         * rectangular area or the data stream between the star and end
-         * positions.
+         * If a page value is greater than the number of available pages,
+         * it is treated as the last page (instead of ignoring the whole
+         * function).
          *
-         * References: VT525
-         *
-         * Probably not worth implementing.
+         * References: DEC STD 070 page 5-169
+         *             VT525
          */
+
+        auto idx = 0u;
+        auto source_rect = collect_rect(seq, idx);
+        if (!source_rect)
+                return;
+
+        // auto const source_page = seq.collect1(idx, 1);
+        idx = seq.next(idx);
+
+        auto dest_top = seq.collect1(idx, 1, 1, int(m_row_count)) - 1;
+        idx = seq.next(idx);
+        auto dest_left = seq.collect1(idx, 1, 1, int(m_column_count)) - 1;
+        idx = seq.next(idx);
+
+        // auto const dest_page = seq.collect1(idx, 1);
+
+        // dest is subject to origin mode
+        auto dest = grid_point{dest_left, dest_top};
+        if (m_modes_private.DEC_ORIGIN()) {
+                dest += m_scrolling_region.origin();
+        }
+
+        // Calculate the destination rect by first moving @source_rect to
+        // @dest then intersecting with the scrolling region (in origin mode)
+        // or clamping to the whole screen (when not in origin mode)
+        auto dest_rect = source_rect.clone().move_to(dest);
+        if (m_modes_private.DEC_ORIGIN()) {
+                dest_rect.intersect_or_extend(m_scrolling_region.as_rect());
+        } else {
+                dest_rect &= grid_rect{0, 0, int(m_column_count - 1), int(m_row_count - 1)};
+        }
+
+        copy_rect(source_rect.size_to(dest_rect), dest_rect.topleft());
 }
 
 void
@@ -2919,18 +3687,26 @@ Terminal::DECERA(vte::parser::Sequence const& seq)
          *
          * If the top > bottom or left > right, the command is ignored.
          *
-         * These coordinates are interpreted according to origin mode (DECOM),
-         * but unaffected by the page margins (DECSLRM?). Current SGR defaults
-         * and cursor position are unchanged.
+         * These coordinates are interpreted according to origin mode (DECOM).
+         * Current SGR defaults and cursor position are unchanged.
          *
-         * Note: DECSACE selects whether this function operates on the
-         * rectangular area or the data stream between the star and end
-         * positions.
-         *
-         * References: VT525
-         *
-         * Probably not worth implementing.
+         * References: DEC STD 070 page 5-171
+         *             VT525
          */
+
+        auto idx = 0u;
+        auto const rect = collect_rect(seq, idx);
+        if (!rect)
+                return; // ignore
+
+        // Like in other erase operations, only use the colours not the other attrs
+        auto const erased_cell = m_color_defaults;
+        rewrite_rect(rect,
+                     true, // as rectangle
+                     false, // not only writing attrs
+                     [&](VteCell* cell) constexpr noexcept -> void {
+                             *cell = erased_cell;
+                     });
 }
 
 void
@@ -2998,13 +3774,14 @@ Terminal::DECFRA(vte::parser::Sequence const& seq)
          *
          * Arguments;
          *   args[0]: the decimal value of the replacement character (GL or GR)
-         *   args[0..3]: top, left, bottom, right of the rectangle (1-based)
+         *   args[1..4]: top, left, bottom, right of the rectangle (1-based)
          *
          * Defaults:
-         *   args[0]: 1
+         *   args[0]: 32 (U+0020 SPACE)
          *   args[1]: 1
-         *   args[2]: height of current page
-         *   args[3]: width of current page
+         *   args[2]: 1
+         *   args[3]: height of current page
+         *   args[4]: width of current page
          *
          * If the top > bottom or left > right, the command is ignored.
          * If the character is not in the GL or GR area, the command is ignored.
@@ -3013,21 +3790,89 @@ Terminal::DECFRA(vte::parser::Sequence const& seq)
          * but unaffected by the page margins (DECSLRM?). Current SGR defaults
          * and cursor position are unchanged.
          *
-         * Note: DECSACE selects whether this function operates on the
-         * rectangular area or the data stream between the start and end
-         * positions.
+         * Note: As a VTE exension, this function accepts any non-zero-width,
+         *   non-combining, non-control unicode character.
+         *   For characters in the BMP, just use its scalar value as-is for
+         *   arg[0].
+         *   For characters not in the BMP, you can either
+         *   * encode it using a surrogate pair as a ':' delimited
+         *     subparameter sequence as arg[0], e.g. using '55358:57240'
+         *     for the UTF-16 representation 0xD83E 0xDF98 of the
+         *     character U+1FB98 UPPER LEFT TO LOWER RIGHT FILL, or
+         *   * encode it as a ':' delimited subparameter sequence containing
+         *     the scalar value split into 16-bit chunks in big-endian
+         *     order, e.g. using '1:64408' for the same U+1FB98 character.
          *
-         * References: VT525
-         *
-         * Probably not worth implementing.
-         *
-         * *If* we were to implement it, we should find a way to allow any
-         * UTF-8 character, perhaps by using subparams to encode it. E.g.
-         * either each UTF-8 byte in a subparam of its own, or just split
-         * the unicode plane off into the leading subparam (plane:remaining 16 bits).
-         * Or by using the last graphic character for it, like REP.
-         * See also the changes wrt. UTF-8 handling here in XTERM 357.
+         * References: DEC STD 070 page 5-170 ff
+         *             VT525
          */
+
+        auto c = U' ';
+        auto idx = 0u;
+        switch (primary_data_syntax()) {
+        case DataSyntax::ECMA48_UTF8: {
+                if (auto const co = seq.collect_char(idx, U' '))
+                        c = *co;
+                else
+                        return;
+                break;
+        }
+
+#if WITH_ICU
+        case DataSyntax::ECMA48_PCTERM: {
+                auto v = seq.param(idx);
+                if (v == -1 || v == 0)
+                        v = 0x20;
+                if (v > 0xff)
+                        return;
+
+                try {
+                        // Cannot use m_converter directly since it may have saved
+                        // state or pending output
+                        if (!m_oneoff_decoder)
+                                m_oneoff_decoder = vte::base::ICUDecoder::clone(m_converter->decoder());
+                        if (!m_oneoff_decoder)
+                                return;
+
+                        m_oneoff_decoder->reset();
+
+                        uint8_t const c8 = {uint8_t(v)};
+                        auto c8ptr = &c8;
+                        if (m_oneoff_decoder->decode(&c8ptr) !=
+                            vte::base::ICUDecoder::Result::eSomething ||
+                            m_oneoff_decoder->pending())
+                                return;
+
+                        c = m_oneoff_decoder->codepoint();
+                        // The translated character must not be C0 or C1
+                        if (c < 0x20 || (c >= 0x7f && c < 0xa0))
+                                return;
+                } catch (...) {
+                        return;
+                }
+
+                break;
+        }
+#endif // WITH_ICU
+
+        default:
+                __builtin_unreachable();
+                return;
+        }
+
+        idx = seq.next(idx);
+        auto const rect = collect_rect(seq, idx);
+        if (!rect)
+                return; // ignore
+
+        /* fill_rect already checks for width 0, no need to pre-check  */
+        if (g_unichar_ismark(c))
+                return; // ignore
+
+        // Charset invocation applies to the fill character
+        fill_rect(rect,
+                  character_replacement(c),
+                  m_defaults.attr);
 }
 
 void
@@ -3342,18 +4187,67 @@ Terminal::DECRARA(vte::parser::Sequence const& seq)
          *
          * If the top > bottom or left > right, the command is ignored.
          *
-         * These coordinates are interpreted according to origin mode (DECOM),
-         * but unaffected by the page margins (DECSLRM?). Current SGR defaults
-         * and cursor position are unchanged.
+         * These coordinates are interpreted according to origin mode (DECOM).
+         * Current SGR defaults and cursor position are unchanged.
          *
          * Note: DECSACE selects whether this function operates on the
-         * rectangular area or the data stream between the star and end
+         * rectangular area or the data stream between the start and end
          * positions.
          *
-         * References: VT525
-         *
-         * Probably not worth implementing.
+         * References: DEC STD 070 page 5-175 f
+         *             VT525
          */
+
+        auto idx = 0u;
+        auto const rect = collect_rect(seq, idx);
+        if (!rect)
+                return;
+
+        // Without SGR params this is a no-op (instead of setting all attributes!)
+        if (idx >= seq.size())
+                return;
+
+
+        // Note that using an an SGR attributes that unsets some attribute
+        // should be ignored; e.g. a DECCARA 3;23 should be the same as a
+        // DECCARA 3.
+
+        auto mask = VteCellAttrReverseMask{};
+        vte::parser::collect_sgr(seq, idx, mask);
+        if (!mask)
+                return; // nothing to do
+
+        // Make sure to only change visual attributes
+        mask.attr &= VTE_ATTR_ALL_SGR_MASK;
+
+        // As per DEC STD 070, DECRARA only supports bold, underline,
+        // blink, and reverse attributes unless they are part of a
+        // well-defined extension. Vte provides such an extension in
+        // that it allows any SGR attributes here (except colours).
+        // However, specifically exclude invisible from the supported
+        // attrs so that an DECRARA 0 doesn't turn all text invisible.
+        mask.attr &= ~VTE_ATTR_INVISIBLE_MASK;
+
+        rewrite_rect(rect,
+                     m_decsace_is_rectangle,
+                     true, // only writing attrs
+                     [&](VteCell* cell) constexpr noexcept -> void {
+                             // While vte has different underline styles
+                             // selected by subparameters of SGR 4, reversing
+                             // underline only toggles between any underline
+                             // to no-underline and v.v.
+
+                             // Need to handle attrs that occupy more than
+                             // 1 bit specially by normalising their non-zero
+                             // values to all-1, so that the ^ can reverse the
+                             // value correctly.
+
+                             auto& attr = cell->attr;
+                             if (attr.underline() && (mask.attr & VTE_ATTR_UNDERLINE_MASK))
+                                     attr.set_underline(VTE_ATTR_UNDERLINE_VALUE_MASK);
+
+                             attr.attr ^= mask.attr;
+                     });
 }
 
 void
@@ -3434,15 +4328,17 @@ Terminal::DECREQTPARM(vte::parser::Sequence const& seq)
                 #if 0
                 screen->flags &= ~VTE_FLAG_INHIBIT_TPARM;
                 #endif
-                reply(seq, VTE_REPLY_DECREPTPARM,
-                      {2, 1, 1, 120, 120, 1, 0});
+                reply(seq,
+                      vte::parser::reply::DECREPTPARM().
+                      append_params({2, 1, 1, 120, 120, 1, 0}));
                 break;
         case 1:
                 #if 0
                 screen->flags |= VTE_FLAG_INHIBIT_TPARM;
                 #endif
-                reply(seq, VTE_REPLY_DECREPTPARM,
-                      {3, 1, 1, 120, 120, 1, 0});
+                reply(seq,
+                      vte::parser::reply::DECREPTPARM().
+                      append_params({3, 1, 1, 120, 120, 1, 0}));
                 break;
         case 2:
         case 3:
@@ -3495,7 +4391,7 @@ Terminal::DECRQCRA(vte::parser::Sequence const& seq)
          *   args[0]: no default
          *   args[1]: 0
          *   args[2]: 1
-         *   args[3]: no default (?)
+         *   args[3]: 1
          *   args[4]: height of current page
          *   args[5]: width of current page
          *
@@ -3512,12 +4408,18 @@ Terminal::DECRQCRA(vte::parser::Sequence const& seq)
 
 #if !VTE_DEBUG
         /* Send a dummy reply */
-        return reply(seq, VTE_REPLY_DECCKSR, {id}, "0000");
+        return reply(seq,
+                     vte::parser::reply::DECCKSR().
+                     append_param(id).
+                     set_string("0000"));
 #else
 
         /* Not in test mode? Send a dummy reply */
         if ((g_test_flags & VTE_TEST_FLAG_DECRQCRA) == 0) {
-                return reply(seq, VTE_REPLY_DECCKSR, {id}, "0000");
+                return reply(seq,
+                             vte::parser::reply::DECCKSR().
+                             append_param(id).
+                             set_string("0000"));
         }
 
         idx = seq.next(idx);
@@ -3525,33 +4427,16 @@ Terminal::DECRQCRA(vte::parser::Sequence const& seq)
         /* We only support 1 'page', so ignore args[1] */
         idx = seq.next(idx);
 
-        int top = seq.collect1(idx, 1, 1, m_row_count);
-        idx = seq.next(idx);
-        int left = seq.collect1(idx, 1, 1, m_column_count); /* use 1 as default here */
-        idx = seq.next(idx);
-        int bottom = seq.collect1(idx, m_row_count, 1, m_row_count);
-        idx = seq.next(idx);
-        int right = seq.collect1(idx, m_column_count, 1, m_column_count);
-
-        if (m_modes_private.DEC_ORIGIN()) {
-                top += m_scrolling_region.top();
-                bottom += m_scrolling_region.top();
-                bottom = std::min(bottom, m_scrolling_region.bottom());
-                left += m_scrolling_region.left();
-                right += m_scrolling_region.left();
-                right = std::min(right, m_scrolling_region.right());
-        }
-
-        unsigned int checksum;
-        if (bottom < top || right < left)
-                checksum = 0; /* empty area */
+        auto checksum = 0u;
+        if (auto rect = collect_rect(seq, idx))
+                checksum = checksum_area(rect);
         else
-                checksum = checksum_area(top -1 + m_screen->insert_delta,
-                                         left - 1,
-                                         bottom - 1 + m_screen->insert_delta,
-                                         right);
+                checksum = 0; /* empty area */
 
-        reply(seq, VTE_REPLY_DECCKSR, {id}, "%04X", checksum);
+        reply(seq,
+              vte::parser::reply::DECCKSR().
+              append_param(id).
+              format("{:04X}", checksum));
 #endif /* VTE_DEBUG */
 }
 
@@ -3560,12 +4445,27 @@ Terminal::DECRQDE(vte::parser::Sequence const& seq)
 {
         /*
          * DECRQDE - request-display-extent
-         * Request how much of the curren tpage is shown on screen.
+         * Request how much of the current page is shown on screen.
          *
-         * References: VT525
+         * Reply: DECRPDE
+         *   Arguments:
+         *     args[0]: the number of lines of page memory being displayed
+         *     args[1]: the number of columns of page memory being displayed
+         *     args[2]: the first column being displayed
+         *     args[3]: the first line being displayed
+         *     args[4]: the page being displayed
          *
-         * Probably not worth implementing.
+         * References: DEC STD 070 p5–88
+         *             VT525
          */
+
+        reply(seq,
+              vte::parser::reply::DECRPDE().
+              append_params({int(m_row_count),
+                              int(m_column_count),
+                              1, // column
+                              1, // row
+                              1})); // page
 }
 
 void
@@ -3623,12 +4523,14 @@ Terminal::DECRQM_ECMA(vte::parser::Sequence const& seq)
         default: assert(mode >= 0); value = m_modes_ecma.get(mode) ? 1 : 2; break;
         }
 
-        _vte_debug_print(VTE_DEBUG_MODES,
-                         "Reporting mode %d (%s) is %d\n",
+        _vte_debug_print(vte::debug::category::MODES,
+                         "Reporting mode {} ({}) is {}",
                          param, m_modes_ecma.mode_to_cstring(mode),
                          value);
 
-        reply(seq, VTE_REPLY_DECRPM_ECMA, {param, value});
+        reply(seq,
+              vte::parser::reply::DECRPM_ECMA().
+              append_params({param, value}));
 }
 
 void
@@ -3652,12 +4554,14 @@ Terminal::DECRQM_DEC(vte::parser::Sequence const& seq)
         default: assert(mode >= 0); value = m_modes_private.get(mode) ? 1 : 2; break;
         }
 
-        _vte_debug_print(VTE_DEBUG_MODES,
-                         "Reporting private mode %d (%s) is %d\n",
+        _vte_debug_print(vte::debug::category::MODES,
+                         "Reporting private mode {} ({}) is {}",
                          param, m_modes_private.mode_to_cstring(mode),
                          value);
 
-        reply(seq, VTE_REPLY_DECRPM_DEC, {param, value});
+        reply(seq,
+              vte::parser::reply::DECRPM_DEC().
+              append_params({param, value}));
 }
 
 void
@@ -3702,21 +4606,21 @@ Terminal::DECRQPSR(vte::parser::Sequence const& seq)
                  *   DATA: report in the format specified in DEC STD 070 p5–200ff
                  */
                 // For now, send an error report
-                reply(seq, VTE_REPLY_DECPSR, {0});
+                reply(seq,
+                      vte::parser::reply::DECPSR().
+                      append_param(0));
                 break;
 
         case 2:
-                /* Cursor information report. This contains:
-                 *   - the cursor position, including character attributes and
-                 *     character protection attribute,
-                 *   - origin mode (DECOM),
-                 *   - the character sets designated to the G0, G1, G2, and G3 sets.
+                /* Tabulation Stop information report.
                  *
                  * Reply: DECTABSR
                  *   DATA: report in the format specified in DEC STD 070 p5–204
                  */
                 // For now, send an error report
-                reply(seq, VTE_REPLY_DECPSR, {0});
+                reply(seq,
+                      vte::parser::reply::DECPSR().
+                      append_param(0));
                 break;
         }
 }
@@ -3769,30 +4673,74 @@ Terminal::DECRQSS(vte::parser::Sequence const& seq)
          * the request as invalid.
          */
         if (i != str.size() || rv != VTE_SEQ_CSI || request.size() > 0 /* any parameters */)
-                return reply(seq, VTE_REPLY_DECRPSS, {0});
+                return reply(seq,
+                             vte::parser::reply::DECRPSS().
+                             append_param(0));
 
         switch (request.command()) {
 
+        case VTE_CMD_DECSACE:
+                return reply(seq,
+                             vte::parser::reply::DECRPSS().
+                             append_param(1).
+                             set_builder(vte::parser::reply::DECSACE().
+                                         append_param(m_decsace_is_rectangle ? 2 : 0 /* or 1 */)));
+
         case VTE_CMD_DECSCUSR:
-                return reply(seq, VTE_REPLY_DECRPSS, {1}, {VTE_REPLY_DECSCUSR, {int(m_cursor_style)}});
+                return reply(seq,
+                             vte::parser::reply::DECRPSS().
+                             append_param(1).
+                             set_builder(vte::parser::reply::DECSCUSR().
+                                         append_param(int(m_cursor_style))));
+
+        case VTE_CMD_DECSGR: {
+                auto builder = vte::parser::reply::DECSGR();
+                append_attr_decsgr_params(m_defaults.attr, builder);
+                return reply(seq,
+                             vte::parser::reply::DECRPSS().
+                             append_param(1).
+                             set_builder(builder));
+        }
 
         case VTE_CMD_DECSTBM:
-                return reply(seq, VTE_REPLY_DECRPSS, {1},
-                             {VTE_REPLY_DECSTBM, {m_scrolling_region.top() + 1,
-                                                  m_scrolling_region.bottom() + 1}});
+                return reply(seq,
+                             vte::parser::reply::DECRPSS().
+                             append_param(1).
+                             set_builder(vte::parser::reply::DECSTBM().
+                                         append_params({m_scrolling_region.top() + 1,
+                                                         m_scrolling_region.bottom() + 1})));
+
+        case VTE_CMD_DECSLPP:
+        case VTE_CMD_DECSLPP_OR_XTERM_WM:
+                return reply(seq,
+                             vte::parser::reply::DECRPSS().
+                             append_param(1).
+                             set_builder(vte::parser::reply::DECSLPP().
+                                         append_param(int(m_row_count))));
 
         case VTE_CMD_DECSLRM:
         case VTE_CMD_DECSLRM_OR_SCOSC:
-                return reply(seq, VTE_REPLY_DECRPSS, {1},
-                             {VTE_REPLY_DECSLRM, {m_scrolling_region.left() + 1,
-                                                  m_scrolling_region.right() + 1}});
+                return reply(seq,
+                             vte::parser::reply::DECRPSS().
+                             append_param(1).
+                             set_builder(vte::parser::reply::DECSLRM().
+                                         append_params({m_scrolling_region.left() + 1,
+                                                         m_scrolling_region.right() + 1})));
+
+        case VTE_CMD_SGR: {
+                auto builder = vte::parser::reply::SGR();
+                append_attr_sgr_params(m_defaults.attr, builder);
+                return reply(seq,
+                             vte::parser::reply::DECRPSS().
+                             append_param(1).
+                             set_builder(builder));
+        }
 
         case VTE_CMD_DECAC:
         case VTE_CMD_DECARR:
         case VTE_CMD_DECATC:
         case VTE_CMD_DECCRTST:
         case VTE_CMD_DECDLDA:
-        case VTE_CMD_DECSACE:
         case VTE_CMD_DECSASD:
         case VTE_CMD_DECSCA:
         case VTE_CMD_DECSCL:
@@ -3803,10 +4751,8 @@ Terminal::DECRQSS(vte::parser::Sequence const& seq)
         case VTE_CMD_DECSDPT:
         case VTE_CMD_DECSEST:
         case VTE_CMD_DECSFC:
-        case VTE_CMD_DECSGR:
         case VTE_CMD_DECSKCV:
         case VTE_CMD_DECSLCK:
-        case VTE_CMD_DECSLPP:
         case VTE_CMD_DECSMBV:
         case VTE_CMD_DECSNLS:
         case VTE_CMD_DECSPMA:
@@ -3821,10 +4767,12 @@ Terminal::DECRQSS(vte::parser::Sequence const& seq)
         case VTE_CMD_DECSWBV:
         case VTE_CMD_DECSZS:
         case VTE_CMD_DECTME:
-        case VTE_CMD_SGR:
         case VTE_CMD_XTERM_MODKEYS:
+        case VTE_CMD_XTERM_STM:
         default:
-                return reply(seq, VTE_REPLY_DECRPSS, {0});
+                return reply(seq,
+                             vte::parser::reply::DECRPSS().
+                             append_param(0));
         }
 }
 
@@ -3854,7 +4802,9 @@ Terminal::DECRQTSR(vte::parser::Sequence const& seq)
                  *   DATA: report in an unspecified format
                  */
                 // For now, send an error report
-                return reply(seq, VTE_REPLY_DECTSR, {0});
+                return reply(seq,
+                             vte::parser::reply::DECTSR().
+                             append_param(0));
 
         case 2:
                 /* DECCTR – Color table request
@@ -3869,7 +4819,9 @@ Terminal::DECRQTSR(vte::parser::Sequence const& seq)
                  *   DATA: report in an unspecified format
                  */
                 // For now, send an error report
-                return reply(seq, VTE_REPLY_DECTSR, {0});
+                return reply(seq,
+                             vte::parser::reply::DECTSR().
+                             append_param(0));
         }
 }
 
@@ -3953,8 +4905,8 @@ Terminal::DECSACE(vte::parser::Sequence const& seq)
 {
         /*
          * DECSACE - select-attribute-change-extent
-         * Selects which positions a rectangle command (DECCARA, DECCRA,
-         * DECERA, DECFRA, DECRARA, DECSERA) affects.
+         * Selects which positions the DECCARA and DECRAR rectangle
+         * commands affects.
          *
          * Arguments:
          *   args[0]:
@@ -3967,10 +4919,22 @@ Terminal::DECSACE(vte::parser::Sequence const& seq)
          * Defaults;
          *   args[0]: 0
          *
-         * References: VT525
-         *
-         * Not worth implementing unless we implement all the rectangle functions.
+         * References: DEC STD 070 page 5-177 f
+         *             VT525
          */
+
+        switch (seq.collect1(0)) {
+        case -1:
+        case 0:
+        case 1:
+                m_decsace_is_rectangle = false;
+                break;
+        case 2:
+                m_decsace_is_rectangle = true;
+                break;
+        default:
+                break;
+        }
 }
 
 void
@@ -4222,18 +5186,30 @@ Terminal::DECSED(vte::parser::Sequence const& seq)
 {
         /*
          * DECSED - selective-erase-in-display
-         * This control function erases some or all of the erasable characters
-         * in the display. DECSED can only erase characters defined as erasable
-         * by the DECSCA control function. DECSED works inside or outside the
-         * scrolling margins.
          *
-         * @args[0] defines which regions are erased. If it is 0, all cells from
-         * the cursor (inclusive) till the end of the display are erase. If it
-         * is 1, all cells from the start of the display till the cursor
-         * (inclusive) are erased. If it is 2, all cells are erased.
+         * Erases (some or all of, depending on args[0]) the erasable
+         * characters in the display, i.e. those which have the
+         * Selectively Erasable attribute set. Characters written with
+         * the Selectively Erasable attribute reset, and empty character
+         * positions, are not affected.
+         * Line attributes are not changed by this function.
+         * This function is not affected by the scrolling margins.
+         *
+         * Arguments:
+         *   args[0]: mode
+         *     0 = erase from the cursor position to the end of the screen
+         *         (inclusive)
+         *     1 = erase from the beginning of the screen to the cursor
+         *         position (inclusive)
+         *     2 = erase display
          *
          * Defaults:
          *   args[0]: 0
+         *
+         * This function is not affected by the scrolling margins.
+         *
+         * References: DEC STD 070 page 5-162 ff
+         *             DEC VT 525
          */
 
         erase_in_display(seq);
@@ -4244,18 +5220,26 @@ Terminal::DECSEL(vte::parser::Sequence const& seq)
 {
         /*
          * DECSEL - selective-erase-in-line
-         * This control function erases some or all of the erasable characters
-         * in a single line of text. DECSEL erases only those characters defined
-         * as erasable by the DECSCA control function. DECSEL works inside or
-         * outside the scrolling margins.
          *
-         * @args[0] defines the region to be erased. If it is 0, all cells from
-         * the cursor (inclusive) till the end of the line are erase. If it is
-         * 1, all cells from the start of the line till the cursor (inclusive)
-         * are erased. If it is 2, the whole line of the cursor is erased.
+         * Erases (some or all of, depending on args[0]) the erasable
+         * characters in the active line, i.e. those which have the
+         * Selectively Erasable attribute set. Characters written with
+         * the Selectively Erasable attribute reset, and empty character
+         * positions, are not affected.
+         * Line attributes are not changed by this function.
+         * This function is not affected by the scrolling margins.
+         *
+         * Arguments: mode
+         *   args[0]: which character positions to erase
+         *     0: from the active position to the end of the line (inclusive)
+         *     1: from the start of the line to the active position (inclusive)
+         *     2: all positions on the active line
          *
          * Defaults:
          *   args[0]: 0
+         *
+         * References: DEC STD 070 page 5-159 ff
+         *             DEC VT 525
          */
 
         erase_in_line(seq);
@@ -4266,10 +5250,12 @@ Terminal::DECSERA(vte::parser::Sequence const& seq)
 {
         /*
          * DECSERA - selective-erase-rectangular-area
-         * Selectively erases characters in the specified rectangle,
-         * replacing them with SPACE (2/0). Character attributes,
-         * protection attribute (DECSCA) and line attributes (DECDHL,
-         * DECDWL) are unchanged.
+         * Erases the erasable characters in the rectangle, i.e. those which
+         * have the Selectively Erasable attribute set. Characters written
+         * with the Selectively Erasable attribute reset, and empty character
+         * positions, are not affected.
+         * Line attributes are not changed by this function.
+         * This function is not affected by the scrolling margins.
          *
          * Arguments;
          *   args[0..3]: top, left, bottom, right of the source rectangle (1-based)
@@ -4286,14 +5272,31 @@ Terminal::DECSERA(vte::parser::Sequence const& seq)
          * but unaffected by the page margins (DECSLRM?). Current SGR defaults
          * and cursor position are unchanged.
          *
-         * Note: DECSACE selects whether this function operates on the
-         * rectangular area or the data stream between the star and end
-         * positions.
-         *
-         * References: VT525
-         *
-         * Probably not worth implementing.
+         * References: DEC STD 070 page 5-172
+         *             VT525
          */
+
+        // Note that this function still differs from DECERA in
+        // that DECERA also erases the attributes (replacing them
+        // with defaults) while DECSERA only erases the characters
+        // and keeps the attributes.
+
+        auto idx = 0u;
+        auto const rect = collect_rect(seq, idx);
+        if (!rect)
+                return; // ignore
+
+        rewrite_rect(rect,
+                     true, // as rectangle
+                     false, // not only writing attrs
+                     [&](VteCell* cell) constexpr noexcept -> void {
+                             // We don't implement the protected attribute, so treat
+                             // all cells as unprotected.
+
+                             cell->c = ' ';
+                             cell->attr.set_columns(1);
+                             cell->attr.set_fragment(false);
+                     });
 }
 
 void
@@ -4355,6 +5358,11 @@ Terminal::DECSGR(vte::parser::Sequence const& seq)
          *             DEC LJ250
          */
         /* TODO: consider implementing sub/superscript? */
+
+        vte::parser::collect_decsgr(seq, 0, m_defaults.attr);
+
+        // Since DECSGR doesn't change any colours, no need to
+        // copy them from m_defaults to m_color_defaults
 }
 
 void
@@ -4463,8 +5471,6 @@ Terminal::DECSLPP(vte::parser::Sequence const& seq)
                 param = 24;
         else if (param < 24)
                 return;
-
-        _vte_debug_print(VTE_DEBUG_EMULATION, "Resizing to %d rows.\n", param);
 
         emit_resize_window(m_column_count, param);
 }
@@ -4690,7 +5696,7 @@ Terminal::DECSR(vte::parser::Sequence const& seq)
          */
         auto const token = seq.collect1(0);
 	reset(true, true);
-        send(VTE_REPLY_DECSRC, {token});
+        send(vte::parser::reply::DECSRC().append_param(token));
 }
 
 void
@@ -5176,7 +6182,9 @@ Terminal::DSR_ECMA(vte::parser::Sequence const& seq)
                  *     0 = ok
                  *     3 = malfunction
                  */
-                reply(seq, VTE_REPLY_DSR, {0});
+                reply(seq,
+                      vte::parser::reply::DSR().
+                      append_param(0));
                 break;
 
         case 6:
@@ -5202,7 +6210,9 @@ Terminal::DSR_ECMA(vte::parser::Sequence const& seq)
                 rowval = CLAMP(get_xterm_cursor_row(), top, bottom) - top;
                 colval = CLAMP(get_xterm_cursor_column(), left, right) - left;
 
-                reply(seq, VTE_REPLY_CPR, {int(rowval + 1), int(colval + 1)});
+                reply(seq,
+                      vte::parser::reply::CPR().
+                      append_params({int(rowval + 1), int(colval + 1)}));
                 break;
 
         default:
@@ -5252,7 +6262,9 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                 rowval = CLAMP(get_xterm_cursor_row(), top, bottom) - top;
                 colval = CLAMP(get_xterm_cursor_column(), left, right) - left;
 
-                reply(seq, VTE_REPLY_DECXCPR, {int(rowval + 1), int(colval + 1), 1});
+                reply(seq,
+                      vte::parser::reply::DECXCPR().
+                      append_params({int(rowval + 1), int(colval + 1), 1}));
                 break;
 
         case 15:
@@ -5265,7 +6277,9 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  *     18 = printer busy
                  *     19 = printer assigned to another session
                  */
-                reply(seq, VTE_REPLY_DECDSR, {13});
+                reply(seq,
+                      vte::parser::reply::DECDSR().
+                      append_param(13));
                 break;
 
         case 25:
@@ -5277,7 +6291,9 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  *
                  * Since we don't do UDK, we report them as locked.
                  */
-                reply(seq, VTE_REPLY_DECDSR, {21});
+                reply(seq,
+                      vte::parser::reply::DECDSR().
+                      append_param(21));
                 break;
 
         case 26:
@@ -5298,7 +6314,9 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  *     4 = LK411
                  *     5 = PCXAL
                  */
-                reply(seq, VTE_REPLY_DECDSR, {27, 0, 0, 5});
+                reply(seq,
+                      vte::parser::reply::DECDSR().
+                      append_params({27, 0, 0, 5}));
                 break;
 
         case 55:
@@ -5311,7 +6329,9 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  * Since we don't implement the DEC locator mode,
                  * we reply with 53.
                  */
-                reply(seq, VTE_REPLY_DECDSR, {53});
+                reply(seq,
+                      vte::parser::reply::DECDSR().
+                      append_param(53));
                 break;
 
         case 56:
@@ -5325,7 +6345,9 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  * Since we don't implement the DEC locator mode,
                  * we reply with 0.
                  */
-                reply(seq, VTE_REPLY_DECDSR, {57, 0});
+                reply(seq,
+                      vte::parser::reply::DECDSR().
+                      append_params({57, 0}));
                 break;
 
         case 62:
@@ -5333,7 +6355,9 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  * Reply: DECMSR
                  *   @arg[0]: floor((number of bytes available) / 16); we report 0
                  */
-                reply(seq, VTE_REPLY_DECMSR, {0});
+                reply(seq,
+                      vte::parser::reply::DECMSR().
+                      append_param(0));
                 break;
 
         case 63:
@@ -5344,7 +6368,10 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  *
                  * Reply with a dummy checksum.
                  */
-                reply(seq, VTE_REPLY_DECCKSR, {seq.collect1(1)}, "0000");
+                reply(seq,
+                      vte::parser::reply::DECCKSR().
+                      append_param(seq.collect1(1)).
+                      set_string("0000"));
                 break;
 
         case 75:
@@ -5355,7 +6382,9 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  *     71 = malfunction or communication error
                  *     73 = no data loss since last power-up
                  */
-                reply(seq, VTE_REPLY_DECDSR, {70});
+                reply(seq,
+                      vte::parser::reply::DECDSR().
+                      append_param(70));
                 break;
 
         case 85:
@@ -5365,7 +6394,23 @@ Terminal::DSR_DEC(vte::parser::Sequence const& seq)
                  *     ...
                  *     83 = not configured
                  */
-                reply(seq, VTE_REPLY_DECDSR, {83});
+                reply(seq,
+                      vte::parser::reply::DECDSR().
+                      append_param(83));
+                break;
+
+        case 996:
+                /* Request the current color preference (dark mode or light mode)
+                 * Reply: DECDSR
+                 *   @arg[0]: 997
+                 *   @arg[0]: status
+                 *     1 = dark mode
+                 *     2 = light mode
+                 */
+                reply(seq,
+                      vte::parser::reply::DECDSR().
+                      append_param(997).
+                      append_param(is_color_palette_dark() ? 1 : 2));
                 break;
 
         default:
@@ -5492,7 +6537,7 @@ Terminal::ED(vte::parser::Sequence const& seq)
          * Defaults:
          *   args[0]: 0
          *
-         * This function does not respect the scrolling margins.
+         * This function is not affected by the scrolling margins.
          *
          * If ERM is set, erases only non-protected characters; if
          * ERM is reset, erases all characters.
@@ -6491,6 +7536,7 @@ Terminal::NUL(vte::parser::Sequence const& seq)
 
 void
 Terminal::OSC(vte::parser::Sequence const& seq)
+try
 {
         /*
          * OSC - operating system command
@@ -6506,23 +7552,37 @@ Terminal::OSC(vte::parser::Sequence const& seq)
          * First, extract the number.
          */
 
-        auto str = seq.string_utf8();
+        auto const u32str = seq.string();
+
+        auto str = std::string{};
+        str.resize_and_overwrite
+                (simdutf::utf8_length_from_utf32(u32str),
+                 [&](char* data,
+                     size_t data_size) constexpr noexcept -> size_t {
+                         return simdutf::convert_utf32_to_utf8
+                                 (u32str, std::span<char>(data, data_size));
+                 });
+
         vte::parser::StringTokeniser tokeniser{str, ';'};
         auto it = tokeniser.cbegin();
-        int osc;
-        if (!it.number(osc))
+        auto const osc = it.number();
+        if (!osc)
                 return;
 
         auto const cend = tokeniser.cend();
         ++it; /* could now be cend */
 
-        switch (osc) {
+        switch (*osc) {
         case VTE_OSC_VTECWF:
-                set_current_file_uri(seq, it, cend);
+                set_termprop_uri(seq, it, cend,
+                                 VTE_PROPERTY_ID_CURRENT_FILE_URI,
+                                 PendingChanges::CWF);
                 break;
 
         case VTE_OSC_VTECWD:
-                set_current_directory_uri(seq, it, cend);
+                set_termprop_uri(seq, it, cend,
+                                 VTE_PROPERTY_ID_CURRENT_DIRECTORY_URI,
+                                 PendingChanges::CWD);
                 break;
 
         case VTE_OSC_VTEHYPER:
@@ -6537,63 +7597,98 @@ Terminal::OSC(vte::parser::Sequence const& seq)
         case VTE_OSC_XTERM_SET_WINDOW_AND_ICON_TITLE:
         case VTE_OSC_XTERM_SET_WINDOW_TITLE: {
                 /* Only sets window title; icon title is not supported */
-                std::string title;
+                auto const info = m_termprops.registry().lookup(VTE_PROPERTY_ID_XTERM_TITLE);
+                assert(info);
+
+                auto set = false;
                 if (it != cend &&
-                    it.size_remaining() < VTE_WINDOW_TITLE_MAX_LENGTH)
-                        title = it.string_remaining();
-                m_window_title_pending.swap(title);
-                m_pending_changes |= vte::to_integral(PendingChanges::TITLE);
+                    it.size_remaining() <= vte::property::Registry::k_max_string_len) {
+                        if (auto const old_value = m_termprops.value(*info);
+                            !old_value ||
+                            !std::holds_alternative<std::string>(*old_value) ||
+                            std::get<std::string>(*old_value) != it.string_view_remaining()) {
+                                set = true;
+                                m_termprops.dirty(info->id()) = true;
+                                *m_termprops.value(info->id()) = it.string_remaining();
+                        }
+                } else {
+                        set = true;
+                        reset_termprop(*info);
+                }
+
+                if (set) {
+                        m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS) |
+                                vte::to_integral(PendingChanges::TITLE);
+                }
                 break;
         }
 
         case VTE_OSC_XTERM_SET_COLOR:
+                set_color(seq, it, cend, OSCValuedColorSequenceKind::XTermColor, *osc);
+                break;
+
         case VTE_OSC_XTERM_SET_COLOR_SPECIAL:
-                set_color(seq, it, cend, osc);
+                set_color(seq, it, cend, OSCValuedColorSequenceKind::XTermSpecialColor, *osc);
                 break;
 
         case VTE_OSC_XTERM_SET_COLOR_TEXT_FG:
-                set_special_color(seq, it, cend, VTE_DEFAULT_FG, -1, osc);
+                set_special_color(seq, it, cend, ColorPaletteIndex::default_fg(), *osc);
                 break;
 
         case VTE_OSC_XTERM_SET_COLOR_TEXT_BG:
-                set_special_color(seq, it, cend, VTE_DEFAULT_BG, -1, osc);
+                set_special_color(seq, it, cend, ColorPaletteIndex::default_bg(), *osc);
                 break;
 
         case VTE_OSC_XTERM_SET_COLOR_CURSOR_BG:
-                set_special_color(seq, it, cend, VTE_CURSOR_BG, VTE_DEFAULT_FG, osc);
+                set_special_color(seq, it, cend, ColorPaletteIndex::cursor_bg(), *osc);
                 break;
 
         case VTE_OSC_XTERM_SET_COLOR_HIGHLIGHT_BG:
-                set_special_color(seq, it, cend, VTE_HIGHLIGHT_BG, VTE_DEFAULT_FG, osc);
+                set_special_color(seq, it, cend, ColorPaletteIndex::highlight_bg(), *osc);
                 break;
 
         case VTE_OSC_XTERM_SET_COLOR_HIGHLIGHT_FG:
-                set_special_color(seq, it, cend, VTE_HIGHLIGHT_FG, VTE_DEFAULT_BG, osc);
+                set_special_color(seq, it, cend, ColorPaletteIndex::highlight_fg(), *osc);
                 break;
 
         case VTE_OSC_XTERM_RESET_COLOR:
+                reset_color(seq, it, cend, OSCValuedColorSequenceKind::XTermColor);
+                break;
+
         case VTE_OSC_XTERM_RESET_COLOR_SPECIAL:
-                reset_color(seq, it, cend, osc);
+                reset_color(seq, it, cend, OSCValuedColorSequenceKind::XTermSpecialColor);
                 break;
 
         case VTE_OSC_XTERM_RESET_COLOR_TEXT_FG:
-                reset_color(VTE_DEFAULT_FG, VTE_COLOR_SOURCE_ESCAPE);
+                reset_color(ColorPaletteIndex::default_fg(), ColorSource::Escape);
                 break;
 
         case VTE_OSC_XTERM_RESET_COLOR_TEXT_BG:
-                reset_color(VTE_DEFAULT_BG, VTE_COLOR_SOURCE_ESCAPE);
+                reset_color(ColorPaletteIndex::default_bg(), ColorSource::Escape);
                 break;
 
         case VTE_OSC_XTERM_RESET_COLOR_CURSOR_BG:
-                reset_color(VTE_CURSOR_BG, VTE_COLOR_SOURCE_ESCAPE);
+                reset_color(ColorPaletteIndex::cursor_bg(), ColorSource::Escape);
                 break;
 
         case VTE_OSC_XTERM_RESET_COLOR_HIGHLIGHT_BG:
-                reset_color(VTE_HIGHLIGHT_BG, VTE_COLOR_SOURCE_ESCAPE);
+                reset_color(ColorPaletteIndex::highlight_bg(), ColorSource::Escape);
                 break;
 
         case VTE_OSC_XTERM_RESET_COLOR_HIGHLIGHT_FG:
-                reset_color(VTE_HIGHLIGHT_FG, VTE_COLOR_SOURCE_ESCAPE);
+                reset_color(ColorPaletteIndex::highlight_fg(), ColorSource::Escape);
+                break;
+
+        case VTE_OSC_VTE_TERMPROP:
+                vte_termprop(seq, it, cend);
+                break;
+
+        case VTE_OSC_URXVT_EXTENSION:
+                urxvt_extension(seq, it, cend);
+                break;
+
+        case VTE_OSC_CONEMU_EXTENSION:
+                conemu_extension(seq, it, cend);
                 break;
 
         case VTE_OSC_XTERM_SET_ICON_TITLE:
@@ -6615,7 +7710,6 @@ Terminal::OSC(vte::parser::Sequence const& seq)
         case VTE_OSC_XTERM_RESET_COLOR_TEK_CURSOR:
         case VTE_OSC_EMACS_51:
         case VTE_OSC_ITERM2_1337:
-        case VTE_OSC_ITERM2_GROWL:
         case VTE_OSC_KONSOLE_30:
         case VTE_OSC_KONSOLE_31:
         case VTE_OSC_RLOGIN_SET_KANJI_MODE:
@@ -6636,11 +7730,14 @@ Terminal::OSC(vte::parser::Sequence const& seq)
         case VTE_OSC_URXVT_SET_FONT_BOLD_ITALIC:
         case VTE_OSC_URXVT_VIEW_UP:
         case VTE_OSC_URXVT_VIEW_DOWN:
-        case VTE_OSC_URXVT_EXTENSION:
         case VTE_OSC_YF_RQGWR:
         default:
                 break;
         }
+}
+catch (...)
+{
+        vte::log_exception();
 }
 
 void
@@ -7090,15 +8187,15 @@ Terminal::SCP(vte::parser::Sequence const& seq)
         case 0:
                 /* FIXME switch to the emulator's default, once we have that concept */
                 m_bidi_rtl = FALSE;
-                _vte_debug_print(VTE_DEBUG_BIDI, "BiDi: default direction restored\n");
+                _vte_debug_print(vte::debug::category::BIDI, "BiDi: default direction restored");
                 break;
         case 1:
                 m_bidi_rtl = FALSE;
-                _vte_debug_print(VTE_DEBUG_BIDI, "BiDi: switch to LTR\n");
+                _vte_debug_print(vte::debug::category::BIDI, "BiDi: switch to LTR");
                 break;
         case 2:
                 m_bidi_rtl = TRUE;
-                _vte_debug_print(VTE_DEBUG_BIDI, "BiDi: switch to RTL\n");
+                _vte_debug_print(vte::debug::category::BIDI, "BiDi: switch to RTL");
                 break;
         default:
                 return;
@@ -7251,135 +8348,10 @@ Terminal::SGR(vte::parser::Sequence const& seq)
          * References: ECMA-48 § 8.3.117
          *             VT525
          */
-        auto const n_params = seq.size();
 
-	/* If we had no parameters, default to the defaults. */
-	if (n_params == 0) {
-                reset_default_attributes(false);
-                return;
-	}
+        vte::parser::collect_sgr(seq, 0, m_defaults.attr);
 
-        for (unsigned int i = 0; i < n_params; i = seq.next(i)) {
-                auto const param = seq.param(i);
-                switch (param) {
-                case -1:
-                case VTE_SGR_RESET_ALL:
-                        reset_default_attributes(false);
-                        break;
-                case VTE_SGR_SET_BOLD:
-                        m_defaults.attr.set_bold(true);
-                        break;
-                case VTE_SGR_SET_DIM:
-                        m_defaults.attr.set_dim(true);
-                        break;
-                case VTE_SGR_SET_ITALIC:
-                        m_defaults.attr.set_italic(true);
-                        break;
-                case VTE_SGR_SET_UNDERLINE: {
-                        auto v = 1;
-                        // If we have a subparameter, get it
-                        if (seq.param_nonfinal(i)) {
-                                v = seq.param_range(i + 1, 1, 0, 5, -2);
-                                // Skip the subparam sequence if the subparam
-                                // is outside the supported range. See issue
-                                // https://gitlab.gnome.org/GNOME/vte/-/issues/2640
-                                if (v == -2)
-                                        break;
-                        }
-                        m_defaults.attr.set_underline(v);
-                        break;
-                }
-                case VTE_SGR_SET_BLINK:
-                case VTE_SGR_SET_BLINK_RAPID:
-                        m_defaults.attr.set_blink(true);
-                        break;
-                case VTE_SGR_SET_REVERSE:
-                        m_defaults.attr.set_reverse(true);
-                        break;
-                case VTE_SGR_SET_INVISIBLE:
-                        m_defaults.attr.set_invisible(true);
-                        break;
-                case VTE_SGR_SET_STRIKETHROUGH:
-                        m_defaults.attr.set_strikethrough(true);
-                        break;
-                case VTE_SGR_SET_UNDERLINE_DOUBLE:
-                        m_defaults.attr.set_underline(2);
-                        break;
-                case VTE_SGR_RESET_BOLD_AND_DIM:
-                        m_defaults.attr.unset(VTE_ATTR_BOLD_MASK | VTE_ATTR_DIM_MASK);
-                        break;
-                case VTE_SGR_RESET_ITALIC:
-                        m_defaults.attr.set_italic(false);
-                        break;
-                case VTE_SGR_RESET_UNDERLINE:
-                        m_defaults.attr.set_underline(0);
-                        break;
-                case VTE_SGR_RESET_BLINK:
-                        m_defaults.attr.set_blink(false);
-                        break;
-                case VTE_SGR_RESET_REVERSE:
-                        m_defaults.attr.set_reverse(false);
-                        break;
-                case VTE_SGR_RESET_INVISIBLE:
-                        m_defaults.attr.set_invisible(false);
-                        break;
-                case VTE_SGR_RESET_STRIKETHROUGH:
-                        m_defaults.attr.set_strikethrough(false);
-                        break;
-                case VTE_SGR_SET_FORE_LEGACY_START ... VTE_SGR_SET_FORE_LEGACY_END:
-                        m_defaults.attr.set_fore(VTE_LEGACY_COLORS_OFFSET + (param - 30));
-                        break;
-                case VTE_SGR_SET_FORE_SPEC: {
-                        uint32_t fore;
-                        if (G_LIKELY((seq_parse_sgr_color<8, 8, 8>(seq, i, fore))))
-                                m_defaults.attr.set_fore(fore);
-                        break;
-                }
-                case VTE_SGR_RESET_FORE:
-                        /* default foreground */
-                        m_defaults.attr.set_fore(VTE_DEFAULT_FG);
-                        break;
-                case VTE_SGR_SET_BACK_LEGACY_START ... VTE_SGR_SET_BACK_LEGACY_END:
-                        m_defaults.attr.set_back(VTE_LEGACY_COLORS_OFFSET + (param - 40));
-                        break;
-                case VTE_SGR_SET_BACK_SPEC: {
-                        uint32_t back;
-                        if (G_LIKELY((seq_parse_sgr_color<8, 8, 8>(seq, i, back))))
-                                m_defaults.attr.set_back(back);
-                        break;
-                }
-                case VTE_SGR_RESET_BACK:
-                        /* default background */
-                        m_defaults.attr.set_back(VTE_DEFAULT_BG);
-                        break;
-                case VTE_SGR_SET_OVERLINE:
-                        m_defaults.attr.set_overline(true);
-                        break;
-                case VTE_SGR_RESET_OVERLINE:
-                        m_defaults.attr.set_overline(false);
-                        break;
-                case VTE_SGR_SET_DECO_SPEC: {
-                        uint32_t deco;
-                        if (G_LIKELY((seq_parse_sgr_color<4, 5, 4>(seq, i, deco))))
-                                m_defaults.attr.set_deco(deco);
-                        break;
-                }
-                case VTE_SGR_RESET_DECO:
-                        /* default decoration color, that is, same as the cell's foreground */
-                        m_defaults.attr.set_deco(VTE_DEFAULT_FG);
-                        break;
-                case VTE_SGR_SET_FORE_LEGACY_BRIGHT_START ... VTE_SGR_SET_FORE_LEGACY_BRIGHT_END:
-                        m_defaults.attr.set_fore(VTE_LEGACY_COLORS_OFFSET + (param - 90) +
-                                                 VTE_COLOR_BRIGHT_OFFSET);
-                        break;
-                case VTE_SGR_SET_BACK_LEGACY_BRIGHT_START ... VTE_SGR_SET_BACK_LEGACY_BRIGHT_END:
-                        m_defaults.attr.set_back(VTE_LEGACY_COLORS_OFFSET + (param - 100) +
-                                                 VTE_COLOR_BRIGHT_OFFSET);
-                        break;
-                }
-        }
-
-	/* Save the new colors. */
+        // ... and save the new colors
         m_color_defaults.attr.copy_colors(m_defaults.attr);
 }
 
@@ -7622,11 +8594,11 @@ Terminal::SPD(vte::parser::Sequence const& seq)
         case -1:
         case 0:
                 m_bidi_rtl = FALSE;
-                _vte_debug_print(VTE_DEBUG_BIDI, "BiDi: switch to LTR\n");
+                _vte_debug_print(vte::debug::category::BIDI, "BiDi: switch to LTR");
                 break;
         case 3:
                 m_bidi_rtl = TRUE;
-                _vte_debug_print(VTE_DEBUG_BIDI, "BiDi: switch to RTL\n");
+                _vte_debug_print(vte::debug::category::BIDI, "BiDi: switch to RTL");
                 break;
         default:
                 return;
@@ -7955,13 +8927,20 @@ Terminal::SUB(vte::parser::Sequence const& seq)
         /*
          * SUB - substitute
          * Cancel the current control-sequence and print a replacement
-         * character. Our parser already handles this so all we have to do is
-         * print the replacement character.
+         * character. Our parser already handles the state changes, so
+         * all we have to do is print the character.
+         *
+         * Use U+2426 SYMBOL FOR SUBSTITUTE FORM TWO as the character
+         * to insert, since it was specifically made for this use case
+         * (see https://www.unicode.org/L2/L1998/98353.pdf).
+         * (Previous vte versions used U+FFFD REPLACEMENT CHARACTER.)
+         * See https://gitlab.gnome.org/GNOME/vte/-/issues/2843 .
          *
          * References: ECMA-48 § 8.3.148
+         *             DEC STD 070 p5-132
          */
 
-        insert_char(0xfffdu, true);
+        insert_char(0x2426u, true);
 }
 
 void
@@ -8721,16 +9700,43 @@ Terminal::XTERM_REPORTSGR(vte::parser::Sequence const& seq)
          * These coordinates are interpreted according to origin mode (DECOM),
          * but unaffected by the page margins (DECSLRM?).
          *
-         * Note: DECSACE selects whether this function operates on the
-         * rectangular area or the data stream between the star and end
-         * positions.
-         *
          * References: XTERM 334
          *
          * Note: The {PUSH,POP,REPORT}SGR protocol is poorly thought-out, and has
-         * no real use case. See the discussion at issue vte#23.
-         * Probably won't implement.
+         * no real use case except for REPORTSGR which is used for esctest.
+         * See the discussion at issue vte#23.
          */
+
+#if VTE_DEBUG
+        // Send a dummy reply unless in test mode (reuse DECRQCRA test flag)
+        if ((g_test_flags & VTE_TEST_FLAG_DECRQCRA) == 0)
+                return reply(seq,
+                             vte::parser::reply::SGR());
+
+        auto idx = 0u;
+        auto const rect = collect_rect(seq, idx);
+        if (!rect)
+                return; // ignore
+
+        // This function is only exposed to esctest which will query
+        // the attributes one cell at a time; don't bother trying to
+        // gather the common attributes in a larger rect.
+        if (rect.width() > 1 || rect.height() > 1)
+                return reply(seq,
+                             vte::parser::reply::SGR());
+
+        auto attr = VteCellAttr{};
+        if (auto rowdata =
+            m_screen->row_data->index_writable(m_screen->insert_delta + rect.top())) {
+                if (auto const cell = _vte_row_data_get(rowdata, rect.left())) {
+                        attr = cell->attr;
+                }
+        }
+
+        auto builder = vte::parser::reply::SGR();
+        append_attr_sgr_params(attr, builder);
+        return reply(seq, builder);
+#endif // VTE_DEBUG
 }
 
 void
@@ -8749,12 +9755,131 @@ Terminal::XTERM_RPM(vte::parser::Sequence const& seq)
 
 void
 Terminal::XTERM_RQTCAP(vte::parser::Sequence const& seq)
+try
 {
         /*
-         * XTERM_TQTCAP - xterm request termcap/terminfo
+         * XTERM_RQTCAP - xterm request termcap/terminfo
          *
-         * Probably not worth implementing.
+         * Gets the terminfo/termcap string. The constrol string
+         * consists of semicolon (';') separated parameters, which
+         * are hex-encoded terminfo/termcap capability names.
+         *
+         * The response is a XTERM_TCAPR report, which consists
+         * of semicolon (';') separated parameters, each of which
+         * is the hex-encoded capability name, followed by an equal
+         * sign ('='), followed by the hex-encoded capability.
+         *
+         * In xterm, an unknown capability in the control string
+         * terminates processing of the control string; in vte
+         * we continue past an unknown capability to process the
+         * remaining capability requests.
+         *
+         * References: XTERM
          */
+
+        auto const u32str = seq.string();
+
+        auto str = std::string{};
+        str.resize_and_overwrite
+                (simdutf::utf8_length_from_utf32(u32str),
+                 [&](char* data,
+                     size_t data_size) constexpr noexcept -> size_t {
+                         return simdutf::convert_utf32_to_utf8
+                                 (u32str, std::span<char>(data, data_size));
+                 });
+
+        auto tokeniser = vte::parser::StringTokeniser{str, ';'};
+        auto it = tokeniser.cbegin();
+        auto const cend = tokeniser.cend();
+
+        auto replystr = std::string{};
+        while (it != cend) {
+                if (auto const capability = vte::base16_decode(*it, false)) {
+                        if (auto [keycode, state] = xtermcap_get_keycode(*capability);
+                            keycode != -1) {
+
+                                auto cap = std::string{};
+
+                                switch (keycode) {
+                                case XTERM_KEY_F63 ... XTERM_KEY_F36:
+                                        break;
+                                case XTERM_KEY_COLORS:
+                                        cap = "256";
+                                        break;
+                                case XTERM_KEY_RGB:
+                                        cap = "8";
+                                        break;
+                                case XTERM_KEY_TCAPNAME:
+                                        cap = "xterm-256color";
+                                        break;
+                                case GDK_KEY_Delete:
+                                case GDK_KEY_BackSpace: {
+                                        char* normal = nullptr;
+                                        auto len = 0uz;
+                                        auto suppress = false, add_modifiers = false;
+                                        map_erase_binding(keycode == GDK_KEY_Delete ? m_delete_binding : m_backspace_binding,
+                                                          keycode == GDK_KEY_Delete ? EraseMode::eDELETE_SEQUENCE : EraseMode::eTTY,
+                                                          state,
+                                                          normal,
+                                                          len,
+                                                          suppress,
+                                                          add_modifiers);
+                                        if (add_modifiers) {
+                                                _vte_keymap_key_add_key_modifiers(keycode,
+                                                                                  state,
+                                                                                  m_modes_private.DEC_APPLICATION_CURSOR_KEYS(),
+                                                                                  &normal,
+                                                                                  &len);
+                                        }
+
+                                        if (normal && len)
+                                                cap = normal;
+                                        g_free(normal);
+                                        break;
+                                }
+                                default:
+                                        if (keycode >= 0) {
+                                                // Use the keymap to get the string
+                                                char* normal = nullptr;
+                                                auto len = 0uz;
+                                                _vte_keymap_map(keycode, state,
+                                                                m_modes_private.DEC_APPLICATION_CURSOR_KEYS(),
+                                                                m_modes_private.DEC_APPLICATION_KEYPAD(),
+                                                                &normal,
+                                                                &len);
+                                                if (normal && len)
+                                                        cap = normal;
+                                                g_free(normal);
+                                        }
+                                        break;
+                                }
+
+                                if (cap.size()) {
+                                        if (replystr.size())
+                                                replystr.push_back(';');
+
+                                        fmt::format_to(std::back_inserter(replystr),
+                                                       "{}={}",
+                                                       *it,
+                                                       vte::base16_encode(cap));
+                                }
+                        } else {
+                                // unknown capability
+                        }
+                } else {
+                        // failed to hexdecode
+                }
+
+                ++it;
+        }
+
+        reply(seq,
+              vte::parser::reply::XTERM_TCAPR().
+              append_param(replystr.size() ? 1 : 0).
+              set_string(std::move(replystr)));
+}
+catch (...)
+{
 }
 
 void
@@ -8845,7 +9970,9 @@ Terminal::XTERM_SMGRAPHICS(vte::parser::Sequence const& seq)
         auto const attr = seq.collect1(0);
         auto status = 1, rv0 = -2, rv1 = -2;
 
-        reply(seq, VTE_REPLY_XTERM_SMGRAPHICS_REPORT, {attr, status, rv0, rv1});
+        reply(seq,
+              vte::parser::reply::XTERM_SMGRAPHICS_REPORT().
+              append_params({attr, status, rv0, rv1}));
 }
 
 void
@@ -8892,7 +10019,7 @@ Terminal::XTERM_STCAP(vte::parser::Sequence const& seq)
         /*
          * XTERM_STCAP - xterm set termcap/terminfo
          *
-         * Probably not worth implementing.
+         * Won't implement.
          */
 }
 
@@ -8917,7 +10044,9 @@ Terminal::XTERM_VERSION(vte::parser::Sequence const& seq)
         if (seq.collect1(0, 0) != 0)
                 return;
 
-        reply(seq, VTE_REPLY_XTERM_DSR, {}, "VTE(%d)", firmware_version());
+        reply(seq,
+              vte::parser::reply::XTERM_DSR().
+              format("VTE({})", firmware_version()));
 }
 
 void
@@ -8964,10 +10093,6 @@ Terminal::XTERM_WM(vte::parser::Sequence const& seq)
                 seq.collect(1, {&height, &width});
 
                 if (width != -1 && height != -1) {
-                        _vte_debug_print(VTE_DEBUG_EMULATION,
-                                         "Resizing window to %dx%d pixels, grid size %dx%d.\n",
-                                         width, height,
-                                         width / int(m_cell_height), height / int(m_cell_width));
                         emit_resize_window(width / int(m_cell_height), height / int(m_cell_width));
                 }
                 break;
@@ -8987,9 +10112,6 @@ Terminal::XTERM_WM(vte::parser::Sequence const& seq)
                 seq.collect(1, {&height, &width});
 
                 if (width != -1 && height != -1) {
-                        _vte_debug_print(VTE_DEBUG_EMULATION,
-                                         "Resizing window to %d columns, %d rows.\n",
-                                         width, height);
                         emit_resize_window(width, height);
                 }
                 break;
@@ -9019,24 +10141,33 @@ Terminal::XTERM_WM(vte::parser::Sequence const& seq)
                 break;
 
         case VTE_XTERM_WM_GET_WINDOW_STATE:
-                reply(seq, VTE_REPLY_XTERM_WM, {m_xterm_wm_iconified ? 2 : 1});
+                reply(seq,
+                      vte::parser::reply::XTERM_WM().
+                      append_param(m_xterm_wm_iconified ? 2 : 1));
                 break;
 
         case VTE_XTERM_WM_GET_WINDOW_POSITION:
                 /* Reply with fixed origin. */
-                reply(seq, VTE_REPLY_XTERM_WM, {3, 0, 0});
+                reply(seq,
+                      vte::parser::reply::XTERM_WM().
+                      append_params({3, 0, 0}));
                 break;
 
         case VTE_XTERM_WM_GET_WINDOW_SIZE_PIXELS: {
                 auto const height = int(m_row_count * m_cell_height_unscaled);
                 auto const width = int(m_column_count * m_cell_width_unscaled);
-                reply(seq, VTE_REPLY_XTERM_WM, {4, height, width});
+                reply(seq,
+                      vte::parser::reply::XTERM_WM().
+                      append_params({4, height, width}));
                 break;
         }
 
         case VTE_XTERM_WM_GET_WINDOW_SIZE_CELLS:
-                reply(seq, VTE_REPLY_XTERM_WM,
-                      {8, (int)m_row_count, (int)m_column_count});
+                reply(seq,
+                      vte::parser::reply::XTERM_WM().
+                      append_params({8,
+                                      (int)m_row_count,
+                                      (int)m_column_count}));
                 break;
 
         case VTE_XTERM_WM_GET_SCREEN_SIZE_CELLS: {
@@ -9047,16 +10178,16 @@ Terminal::XTERM_WM(vte::parser::Sequence const& seq)
                 auto gdkscreen = gtk_widget_get_screen(m_widget);
                 int height = gdk_screen_get_height(gdkscreen);
                 int width = gdk_screen_get_width(gdkscreen);
-                _vte_debug_print(VTE_DEBUG_EMULATION,
-                                 "Reporting screen size as %dx%d cells.\n",
-                                 height / int(m_cell_height), width / int(m_cell_width));
 #elif VTE_GTK == 4
                 auto height = int(m_row_count * m_cell_height);
                 auto width = int(m_column_count * m_cell_width);
 #endif
 
-                reply(seq, VTE_REPLY_XTERM_WM,
-                      {9, height / int(m_cell_height), width / int(m_cell_width)});
+                reply(seq,
+                      vte::parser::reply::XTERM_WM().
+                      append_params({9,
+                                      height / int(m_cell_height),
+                                      width / int(m_cell_width)}));
                 break;
         }
 
@@ -9067,10 +10198,9 @@ Terminal::XTERM_WM(vte::parser::Sequence const& seq)
                  * http://marc.info/?l=bugtraq&m=104612710031920&w=2
                  * and CVE-2003-0070.
                  */
-                _vte_debug_print(VTE_DEBUG_EMULATION,
-                                 "Reporting empty icon title.\n");
-
-                send(seq, vte::parser::u8SequenceBuilder{VTE_SEQ_OSC, "L"s});
+                reply(seq,
+                     vte::parser::reply::OSC().
+                     set_string("L"));
                 break;
 
         case VTE_XTERM_WM_GET_WINDOW_TITLE:
@@ -9080,31 +10210,35 @@ Terminal::XTERM_WM(vte::parser::Sequence const& seq)
                  * http://marc.info/?l=bugtraq&m=104612710031920&w=2
                  * and CVE-2003-0070.
                  */
-                _vte_debug_print(VTE_DEBUG_EMULATION,
-                                 "Reporting empty window title.\n");
-
-                send(seq, vte::parser::u8SequenceBuilder{VTE_SEQ_OSC, "l"s});
+                reply(seq,
+                      vte::parser::reply::OSC().
+                      set_string("l"));
                 break;
 
         case VTE_XTERM_WM_TITLE_STACK_PUSH:
                 switch (seq.collect1(1)) {
                 case -1:
                 case VTE_OSC_XTERM_SET_WINDOW_AND_ICON_TITLE:
-                case VTE_OSC_XTERM_SET_WINDOW_TITLE:
+                case VTE_OSC_XTERM_SET_WINDOW_TITLE: {
                         if (m_window_title_stack.size() >= VTE_WINDOW_TITLE_STACK_MAX_DEPTH) {
                                 /* Drop the bottommost item */
                                 m_window_title_stack.erase(m_window_title_stack.cbegin());
                         }
 
-                        if (m_pending_changes & vte::to_integral(PendingChanges::TITLE))
+                        auto const info = m_termprops.registry().lookup(VTE_PROPERTY_ID_XTERM_TITLE);
+                        assert(info);
+                        auto const value = m_termprops.value(*info);
+                        if (value &&
+                            std::holds_alternative<std::string>(*value))
                                 m_window_title_stack.emplace(m_window_title_stack.cend(),
-                                                             m_window_title_pending);
+                                                             std::get<std::string>(*value));
                         else
                                 m_window_title_stack.emplace(m_window_title_stack.cend(),
-                                                             m_window_title);
+                                                             std::string{});
 
                         vte_assert_cmpuint(m_window_title_stack.size(), <=, VTE_WINDOW_TITLE_STACK_MAX_DEPTH);
                         break;
+                }
 
                 case VTE_OSC_XTERM_SET_ICON_TITLE:
                 default:
@@ -9116,14 +10250,20 @@ Terminal::XTERM_WM(vte::parser::Sequence const& seq)
                 switch (seq.collect1(1)) {
                 case -1:
                 case VTE_OSC_XTERM_SET_WINDOW_AND_ICON_TITLE:
-                case VTE_OSC_XTERM_SET_WINDOW_TITLE:
+                case VTE_OSC_XTERM_SET_WINDOW_TITLE: {
                         if (m_window_title_stack.empty())
                                 break;
 
-                        m_pending_changes |= vte::to_integral(PendingChanges::TITLE);
-                        m_window_title_pending.swap(m_window_title_stack.back());
+                        auto const info = m_termprops.registry().lookup(VTE_PROPERTY_ID_XTERM_TITLE);
+                        assert(info);
+                        m_termprops.dirty(info->id()) = true;
+                        *m_termprops.value(info->id()) = std::move(m_window_title_stack.back());
                         m_window_title_stack.pop_back();
+
+                        m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS) |
+                                vte::to_integral(PendingChanges::TITLE);
                         break;
+                }
 
                 case VTE_OSC_XTERM_SET_ICON_TITLE:
                 default:

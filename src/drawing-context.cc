@@ -22,7 +22,7 @@
 #include <cmath>
 
 #include "bidi.hh"
-#include "debug.h"
+#include "debug.hh"
 #include "drawing-context.hh"
 #include "fonts-pangocairo.hh"
 
@@ -58,7 +58,7 @@ DrawingContext::set_text_font(GtkWidget* widget,
 	PangoFontDescription *bolditalicdesc = nullptr;
 	gint normal, bold, ratio;
 
-	_vte_debug_print (VTE_DEBUG_DRAW, "draw_set_text_font\n");
+	_vte_debug_print(vte::debug::category::DRAW, "draw_set_text_font");
 
         clear_font_cache();
 
@@ -96,8 +96,9 @@ DrawingContext::set_text_font(GtkWidget* widget,
 	bold   = normal | VTE_DRAW_BOLD;
 	ratio = m_fonts[bold]->width() * 100 / m_fonts[normal]->width();
 	if (abs(ratio - 100) > 10) {
-		_vte_debug_print (VTE_DEBUG_DRAW,
-			"Rejecting bold font (%i%%).\n", ratio);
+		_vte_debug_print(vte::debug::category::DRAW,
+                                 "Rejecting bold font (ratio {}%)",
+                                 ratio);
                 m_fonts[bold]->unref();
                 m_fonts[bold] = m_fonts[normal]->ref();
 	}
@@ -105,8 +106,9 @@ DrawingContext::set_text_font(GtkWidget* widget,
 	bold   = normal | VTE_DRAW_BOLD;
 	ratio = m_fonts[bold]->width() * 100 / m_fonts[normal]->width();
 	if (abs(ratio - 100) > 10) {
-		_vte_debug_print (VTE_DEBUG_DRAW,
-			"Rejecting italic bold font (%i%%).\n", ratio);
+		_vte_debug_print(vte::debug::category::DRAW,
+                                 "Rejecting italic bold font (ratio {}%)",
+                                 ratio);
                 m_fonts[bold]->unref();
                 m_fonts[bold] = m_fonts[normal]->ref();
 	}
@@ -151,7 +153,7 @@ DrawingContext::get_char_edges(vteunistr c,
                                int& left,
                                int& right)
 {
-        if (G_UNLIKELY(m_minifont.unistr_is_local_graphic (c))) {
+        if (Minifont::unistr_is_local_graphic(c)) [[unlikely]] {
                 left = 0;
                 right = m_cell_width * columns;
                 return;
@@ -184,67 +186,6 @@ DrawingContext::get_char_edges(vteunistr c,
 
         left = l;
         right = l + w;
-}
-
-void
-DrawingContext::draw_text(TextRequest* requests,
-                          gsize n_requests,
-                          uint32_t attr,
-                          vte::color::rgb const* color)
-{
-	if (_vte_debug_on (VTE_DEBUG_DRAW)) {
-		GString *string = g_string_new ("");
-		gchar *str;
-		gsize n;
-		for (n = 0; n < n_requests; n++) {
-			g_string_append_unichar (string, requests[n].c);
-		}
-		str = g_string_free (string, FALSE);
-		g_printerr ("draw_text (\"%s\", len=%" G_GSIZE_FORMAT ", color=(%d,%d,%d), %s - %s)\n",
-				str, n_requests, color->red, color->green, color->blue,
-				(attr & VTE_ATTR_BOLD)   ? "bold"   : "normal",
-				(attr & VTE_ATTR_ITALIC) ? "italic" : "regular");
-		g_free (str);
-	}
-
-	draw_text_internal(requests, n_requests, attr, color);
-}
-
-/* The following two functions are unused since commit 154abade902850afb44115cccf8fcac51fc082f0,
- * but let's keep them for now since they may become used again.
- */
-bool
-DrawingContext::has_char(vteunistr c,
-                         uint32_t attr)
-{
-	_vte_debug_print (VTE_DEBUG_DRAW, "draw_has_char ('0x%04X', %s - %s)\n", c,
-				(attr & VTE_ATTR_BOLD)   ? "bold"   : "normal",
-				(attr & VTE_ATTR_ITALIC) ? "italic" : "regular");
-
-        auto const style = attr_to_style(attr);
-	g_return_val_if_fail(m_fonts[style], false);
-
-	auto uinfo = m_fonts[style]->get_unistr_info(c);
-	return !uinfo->has_unknown_chars;
-}
-
-bool
-DrawingContext::draw_char(TextRequest* request,
-                          uint32_t attr,
-                          vte::color::rgb const* color)
-{
-	_vte_debug_print (VTE_DEBUG_DRAW,
-			"draw_char ('%c', color=(%d,%d,%d), %s, %s)\n",
-			request->c,
-			color->red, color->green, color->blue,
-			(attr & VTE_ATTR_BOLD)   ? "bold"   : "normal",
-			(attr & VTE_ATTR_ITALIC) ? "italic" : "regular");
-
-	auto const have_char = has_char(request->c, attr);
-	if (have_char)
-		draw_text(request, 1, attr, color);
-
-	return have_char;
 }
 
 void
@@ -284,10 +225,9 @@ DrawingContext::draw_undercurl(int x,
 
         cairo_save (cr);
 
-        _vte_debug_print (VTE_DEBUG_DRAW,
-                          "draw_undercurl (x=%d, y=%f, count=%d, color=(%d,%d,%d))\n",
-                          x, y, count,
-                          color->red, color->green, color->blue);
+        _vte_debug_print(vte::debug::category::DRAW,
+                         "draw_undercurl (x={}, y={:f}, count={}, color={}",
+                         x, y, count, *color);
 
         if (m_undercurl_surface_scale != scale_factor)
                 m_undercurl_surface.reset();
@@ -303,8 +243,8 @@ DrawingContext::draw_undercurl(int x,
                 double y_center = (y + y_bottom) / 2.;
                 gint surface_bottom = y_bottom + 1;  /* ceil, kind of */
 
-                _vte_debug_print (VTE_DEBUG_DRAW,
-                                  "caching undercurl shape\n");
+                _vte_debug_print(vte::debug::category::DRAW,
+                                 "caching undercurl shape");
 
                 /* Add a line_width of margin horizontally on both sides, for nice antialias overflowing.
                  * Add pixel margin to top/bottom for curl antialiasing.

@@ -19,6 +19,7 @@
 #pragma once
 
 #include "drawing-context.hh"
+#include "minifont.hh"
 
 namespace vte {
 namespace view {
@@ -71,6 +72,8 @@ public:
 
         void set_cairo(cairo_t* cr) noexcept;
 
+        constexpr cairo_t* cairo() const noexcept { return m_cr; }
+
         void draw_surface_with_color_mask(cairo_surface_t *surface,
                                           int x,
                                           int y,
@@ -78,14 +81,38 @@ public:
                                           int height,
                                           vte::color::rgb const* color) const override;
 
-protected:
-        void draw_text_internal(TextRequest* requests,
-                                gsize n_requests,
-                                uint32_t attr,
-                                vte::color::rgb const* color) override;
+        void draw_text(TextRequest* requests,
+                       gsize n_requests,
+                       uint32_t attr,
+                       vte::color::rgb const* color) override;
+
+        inline void fill_cell_background(size_t column,
+                                         size_t row,
+                                         size_t n_colums,
+                                         vte::color::rgb const* color) override {
+                fill_rectangle(column * cell_width(),
+                               row * cell_height(),
+                               cell_width() * n_colums,
+                               cell_height(),
+                               color);
+        }
+        inline void begin_background(Rectangle const& rect,
+                                     size_t columns,
+                                     size_t rows) override
+        {
+                cairo_save(m_cr);
+                cairo_translate(m_cr, rect.cairo()->x, rect.cairo()->y);
+        }
+
+        inline void flush_background(Rectangle const& rect) override
+        {
+                cairo_restore(m_cr);
+        }
 
 private:
         cairo_t *m_cr{nullptr}; // unowned
+
+        Minifont m_minifont{};
 };
 
 } // namespace view

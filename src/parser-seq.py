@@ -581,6 +581,8 @@ sequences = [
             comment='xterm initiate highlight mouse tracking'),
     seq_CSI('DTA', 'T', intermediates=(Intermediate.SPACE,), flags=Flags.NOP,
             comment='dimension text area'),
+    seq_CSI('MINTTY_SD', 'T', intermediates=(Intermediate.PLUS,), flags=Flags.NOP,
+            comment='mintty unscroll'),
     seq_CSI('XTERM_RTM', 'T', pintro=(ParameterIntro.GT,), flags=Flags.NOP,
             comment='xterm reset title mode'),
     seq_CSI('NP', 'U', flags=Flags.NOP,
@@ -695,7 +697,7 @@ sequences = [
             comment='reset mode dec'),
     seq_CSI('SGR', 'm',
             comment='select graphics rendition'),
-    seq_CSI('DECSGR', 'm', pintro=(ParameterIntro.WHAT,), flags=Flags.NOP,
+    seq_CSI('DECSGR', 'm', pintro=(ParameterIntro.WHAT,),
             comment='DEC select graphics rendition'),
     seq_CSI('XTERM_MODKEYS', 'm', pintro=(ParameterIntro.GT,), flags=Flags.NOP,
             comment='xterm set key modifier options'),
@@ -762,7 +764,7 @@ sequences = [
             comment='set top and bottom margins'),
     seq_CSI('DECSKCV', 'r', intermediates=(Intermediate.SPACE,), flags=Flags.NOP,
             comment='set key click volume'),
-    seq_CSI('DECCARA', 'r', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
+    seq_CSI('DECCARA', 'r', intermediates=(Intermediate.CASH,),
             comment='change attributes in rectangular area'),
     seq_CSI('DECSCS', 'r', intermediates=(Intermediate.MULT,), flags=Flags.NOP,
             comment='select communication speed'),
@@ -774,7 +776,7 @@ sequences = [
             comment='pcterm'),
     seq_CSI('XTERM_RPM', 'r', pintro=(ParameterIntro.WHAT,),
             comment='xterm restore DEC private mode'),
-    seq_CSI('DECSLRM', 's', flags=Flags.NOP,
+    seq_CSI('DECSLRM', 's',
             comment='set left and right margins'),
     seq_CSI('SCOSC', 's',
             comment='SCO save cursor'),
@@ -794,7 +796,7 @@ sequences = [
             comment='set warning bell volume'),
     seq_CSI('DECSRFR', 't', intermediates=(Intermediate.DQUOTE,), flags=Flags.NOP,
             comment='select refresh rate'),
-    seq_CSI('DECRARA', 't', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
+    seq_CSI('DECRARA', 't', intermediates=(Intermediate.CASH,),
             comment='reverse attributes in rectangular area'),
     seq_CSI('XTERM_STM', 't', pintro=(ParameterIntro.GT,), flags=Flags.NOP,
             comment='xterm set title mode'),
@@ -814,15 +816,17 @@ sequences = [
             comment='request user preferred supplemental set'),
     seq_CSI('DECSLCK', 'v', intermediates=(Intermediate.SPACE,), flags=Flags.NOP,
             comment='set lock key style'),
-    seq_CSI('DECRQDE', 'v', intermediates=(Intermediate.DQUOTE,), flags=Flags.NOP,
+    seq_CSI('DECRQDE', 'v', intermediates=(Intermediate.DQUOTE,),
             comment='request display extent'),
-    seq_CSI('DECCRA', 'v', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
+    seq_CSI('DECCRA', 'v', intermediates=(Intermediate.CASH,),
             comment='copy rectangular area'),
     seq_CSI('DECRPKT', 'v', intermediates=(Intermediate.COMMA,), flags=Flags.NOP,
+            direction = Direction.TTH,
             comment='report key type'),
     seq_CSI('WYCAA', 'w', flags=Flags.NOP,
             comment='redefine character display attribute association'),
-    seq_CSI('DECRPDE', 'w', intermediates=(Intermediate.DQUOTE,), flags=Flags.NOP,
+    seq_CSI('DECRPDE', 'w', intermediates=(Intermediate.DQUOTE,),
+            direction = Direction.TTH,
             comment='report displayed extent'),
     seq_CSI('DECRQPSR', 'w', intermediates=(Intermediate.CASH,),
             comment='request presentation state report'),
@@ -834,11 +838,11 @@ sequences = [
             comment='request terminal parameters'),
     seq_CSI('WYCDIR', 'x', flags=Flags.NOP,
             comment='set current character attributes'),
-    seq_CSI('DECFRA', 'x', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
+    seq_CSI('DECFRA', 'x', intermediates=(Intermediate.CASH,),
             comment='fill rectangular area'),
     seq_CSI('DECES', 'x', intermediates=(Intermediate.AND,), flags=Flags.NOP,
             comment='enable session'),
-    seq_CSI('DECSACE', 'x', intermediates=(Intermediate.MULT,), flags=Flags.NOP,
+    seq_CSI('DECSACE', 'x', intermediates=(Intermediate.MULT,),
             comment='select attribute change extent'),
     seq_CSI('DECRQPKFM', 'x', intermediates=(Intermediate.PLUS,), flags=Flags.NOP,
             comment='request program key free memory'),
@@ -856,7 +860,7 @@ sequences = [
             comment='update session'),
     seq_CSI('WYSCRATE', 'z', flags=Flags.NOP,
             comment='set smooth scroll rate'),
-    seq_CSI('DECERA', 'z', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
+    seq_CSI('DECERA', 'z', intermediates=(Intermediate.CASH,),
             comment='erase rectangular area'),
     seq_CSI('DECELR', 'z', intermediates=(Intermediate.SQUOTE,), flags=Flags.NOP,
             comment='enable locator reporting'),
@@ -868,7 +872,7 @@ sequences = [
             comment='down line load allocation'),
     seq_CSI('XTERM_PUSHSGR', '{', intermediates=(Intermediate.HASH,), flags=Flags.NOP,
             comment='xterm push SGR stack'),
-    seq_CSI('DECSERA', '{', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
+    seq_CSI('DECSERA', '{', intermediates=(Intermediate.CASH,),
             comment='selective erase rectangular area'),
     seq_CSI('DECSLE', '{', intermediates=(Intermediate.SQUOTE,), flags=Flags.NOP,
             comment='select locator events'),
@@ -876,7 +880,7 @@ sequences = [
             comment='select color lookup table'),
     seq_CSI('DECSZS', '{', intermediates=(Intermediate.COMMA,), flags=Flags.NOP,
             comment='select zero symbol'),
-    seq_CSI('XTERM_REPORTSGR', '|', intermediates=(Intermediate.HASH,), flags=Flags.NOP,
+    seq_CSI('XTERM_REPORTSGR', '|', intermediates=(Intermediate.HASH,),
             comment='xterm SGR report'),
     seq_CSI('DECSCPP', '|', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
             comment='select columns per page'),
@@ -896,7 +900,7 @@ sequences = [
             comment='insert column'),
     seq_CSI('DECATC', '}', intermediates=(Intermediate.COMMA,), flags=Flags.NOP,
             comment='alternate text color'),
-    seq_CSI('DECFNK', '~', direction=Direction.TTH, flags=Flags.NOP,
+    seq_CSI('DECFNK', '~', direction=Direction.BIDI, flags=Flags.NOP,
             comment='dec function key / XTERM bracketed paste'),
     seq_CSI('DECTME', '~', intermediates=(Intermediate.SPACE,), flags=Flags.NOP,
             comment='terminal mode emulation'),
@@ -922,10 +926,13 @@ sequences = [
             comment='SIXEL graphics'),
     seq_DCS('DECRQSS', 'q', intermediates=(Intermediate.CASH,),
             comment='request selection or setting'),
-    seq_DCS('XTERM_RQTCAP', 'q', intermediates=(Intermediate.PLUS,), flags=Flags.NOP,
+    seq_DCS('XTERM_RQTCAP', 'q', intermediates=(Intermediate.PLUS,),
             comment='xterm request termcap/terminfo'),
     seq_DCS('DECLBAN', 'r', flags=Flags.NOP,
             comment='load banner message'),
+    seq_DCS('XTERM_TCAPR', 'r', intermediates=(Intermediate.PLUS,), flags=Flags.NOP,
+            direction=Direction.TTH,
+            comment='xterm termcap report'),
     seq_DCS('DECTSR', 's', intermediates=(Intermediate.CASH,), flags=Flags.NOP,
             direction = Direction.TTH,
             comment='terminal state report'),
@@ -959,8 +966,10 @@ sequences = [
     seq_DCS('WYLSFNT', '}', flags=Flags.NOP,
             comment='load soft font'),
     seq_DCS('DECRPFK', '}', intermediates=(Intermediate.DQUOTE,), flags=Flags.NOP,
+            direction=Direction.TTH,
             comment='report function key definition'),
     seq_DCS('DECRPAK', '~', intermediates=(Intermediate.DQUOTE,), flags=Flags.NOP,
+            direction=Direction.TTH,
             comment='report all modifier/alphanumeric key state'),
 
     # SCI sequences
@@ -990,7 +999,7 @@ def get_sequences(predicate):
     return result
 
 '''
-Returns: Dict[str, Tuple[str, str]] mapping command name to (comment, flags)
+Returns: Dict[str, Tuple[Flags, Direction, str]] mapping command name to (flags, direction, comment)
 '''
 def get_commands(predicate):
     cmds={}
@@ -1000,14 +1009,16 @@ def get_commands(predicate):
         seq_list = all_seqs[_seq]
         for seq in seq_list:
             if seq.name in cmds:
-                flags, comment = cmds[seq.name]
+                flags, direction, comment = cmds[seq.name]
 
                 if flags != seq.flags:
                     raise ValueError(f'{seq.name} flags inconsistent: {seq.flags} vs {flags}')
+                if direction != seq.direction:
+                    raise ValueError(f'{seq.name} direction inconsistent: {seq.direction} vs {direction}')
                 if comment != seq.comment:
                     raise ValueError(f'{seq.name} comment inconsistent: {seq.comment} vs {comment}')
 
-            cmds[seq.name]=(seq.flags, seq.comment)
+            cmds[seq.name]=(seq.flags, seq.direction, seq.comment)
 
         # Add an extra entry for the disambiguation command
         if len(seq_list) > 1:
@@ -1017,6 +1028,7 @@ def get_commands(predicate):
             or_comment=' or '.join(tuple([seq.comment for seq in sorted_seqs]))
 
             or_flags=None
+            or_direction=Direction.HTT
             for seq in sorted_seqs:
                 flags=seq.flags
                 if flags is None or or_flags is None:
@@ -1024,7 +1036,9 @@ def get_commands(predicate):
                 else:
                     or_flags &= flags
 
-            cmds[or_name] = (or_flags, or_comment)
+                or_direction |= seq.direction
+
+            cmds[or_name] = (or_flags, or_direction, or_comment)
 
     return cmds
 
@@ -1056,8 +1070,9 @@ def get_seqs(predicate):
             name=seq_list[0].name
             comment=seq_list[0].comment
             flags=seq_list[0].flags
+            direction=seq_list[0].direction
 
-        seqs[seq] = (seq.stype, name, seq.final, seq.pintro, seq.intermediates, flags, comment)
+        seqs[seq] = (seq.stype, name, seq.final, seq.pintro, seq.intermediates, flags, direction, comment)
 
     return seqs
 
@@ -1087,7 +1102,7 @@ def write_header(outfile):
 
 
 ''' Write sequences '''
-def write_seqs(output, stype):
+def write_seqs(output, stype, sdir=Direction.HTT):
     outfile = open(output.as_posix(), 'w')
     write_header(outfile)
     outfile.write('''
@@ -1118,7 +1133,7 @@ def write_seqs(output, stype):
 
     seqs = get_seqs(lambda seq: seq.stype == stype)
     for seq in seqs:
-        stype, name, final, pintro, intermediates, flags, comment = seqs[seq]
+        stype, name, final, pintro, intermediates, flags, direction, comment = seqs[seq]
 
         if len(intermediates) > 2:
             raise ValueError('{name} has too many intermediates')
@@ -1136,6 +1151,9 @@ def write_seqs(output, stype):
             macro = '_VTE_NOQ'
         else:
             macro = '_VTE_SEQ'
+
+        if not direction & sdir:
+            continue
 
         outfile.write(f'{macro}('
                       f'{name}, '
@@ -1167,7 +1185,10 @@ _VTE_CMD(GRAPHIC) /* graphics character */
 
     cmds = get_commands(lambda seq: True)
     for name in sorted(cmds):
-        flags, comment = cmds[name]
+        flags, direction, comment = cmds[name]
+        if not direction & Direction.HTT:
+            continue
+
         if flags is None or not (flags & Flags.NOP):
             if comment is not None:
                 outfile.write(f'_VTE_CMD({name}) /* {comment} */\n')
@@ -1176,7 +1197,10 @@ _VTE_CMD(GRAPHIC) /* graphics character */
 
     outfile.write('/* Unimplemented in VTE: */\n')
     for name in sorted(cmds):
-        flags, comment = cmds[name]
+        flags, direction, comment = cmds[name]
+        if not direction & Direction.HTT:
+            continue
+
         if flags is not None and flags & Flags.NOP:
             if comment is not None:
                 outfile.write(f'_VTE_NOP({name}) /* {comment} */\n')
@@ -1212,7 +1236,9 @@ _VTE_CMD_HANDLER(GRAPHIC) /* graphics character */
 
     cmds = get_commands(lambda seq: True)
     for name in sorted(cmds):
-        flags, comment = cmds[name]
+        flags, direction, comment = cmds[name]
+        if not direction & Direction.HTT:
+            continue
         if comment is not None:
             outfile.write(f'{cmd_handler_macro(flags)}({name}) /* {comment} */\n')
         else:
