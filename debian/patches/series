@@ -1,1 +1,3 @@
 Allow-background-color-and-color-on-VteTerminal-widgets-t.patch
+CVE-2024-37535-1.patch
+CVE-2024-37535-2.patch
