@@ -87,10 +87,6 @@
 
 #define VTE_UTF8_BPC                    (4) /* Maximum number of bytes used per UTF-8 character */
 
-/* Keep in decreasing order of precedence. */
-#define VTE_COLOR_SOURCE_ESCAPE 0
-#define VTE_COLOR_SOURCE_API 1
-
 #define VTE_FONT_SCALE_MIN (.25)
 #define VTE_FONT_SCALE_MAX (4.)
 #define VTE_CELL_SCALE_MIN (1.)
@@ -127,9 +123,6 @@
  * Make sure there are enough bits to store this in VteStreamCellAttr.hyperlink_length */
 #define VTE_HYPERLINK_TOTAL_LENGTH_MAX  (VTE_HYPERLINK_ID_LENGTH_MAX + 1 + VTE_HYPERLINK_URI_LENGTH_MAX)
 
-/* Max length of title */
-#define VTE_WINDOW_TITLE_MAX_LENGTH (1024)
-
 /* Max depth of title stack */
 #define VTE_WINDOW_TITLE_STACK_MAX_DEPTH (8)
 
@@ -147,3 +140,5 @@
 #define VTE_MIN_GRID_HEIGHT (1)
 
 #define VTE_FONT_WEIGHT_BOLDENING (PANGO_WEIGHT_BOLD - PANGO_WEIGHT_NORMAL)
+
+#define VTE_MAX_TERMPROP_NUM (256)

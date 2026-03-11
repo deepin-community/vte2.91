@@ -600,10 +600,12 @@ Widget::Widget(VteTerminal* t)
 Widget::~Widget() noexcept
 try
 {
-        g_signal_handlers_disconnect_matched(m_settings.get(),
-                                             G_SIGNAL_MATCH_DATA,
-                                             0, 0, NULL, NULL,
-                                             this);
+        if (m_settings) {
+                g_signal_handlers_disconnect_matched(m_settings.get(),
+                                                     G_SIGNAL_MATCH_DATA,
+                                                     0, 0, NULL, NULL,
+                                                     this);
+        }
 
         if (m_vadjustment) {
                 g_signal_handlers_disconnect_by_func(m_vadjustment.get(),
@@ -833,7 +835,8 @@ Widget::constructed() noexcept
         gtk_event_controller_set_name(controller.get(), "vte-motion-controller");
         gtk_widget_add_controller(m_widget, controller.release());
 
-        auto const scroll_flags = GtkEventControllerScrollFlags(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
+        auto const scroll_flags = GtkEventControllerScrollFlags(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL |
+                                                                GTK_EVENT_CONTROLLER_SCROLL_HORIZONTAL);
         controller = vte::glib::take_ref(gtk_event_controller_scroll_new(scroll_flags));
         g_signal_connect(controller.get(), "scroll-begin",
                          G_CALLBACK(scroll_begin_cb), this);
@@ -1400,6 +1403,14 @@ Widget::im_set_cursor_location(cairo_rectangle_int_t const* rect) noexcept
         gtk_im_context_set_cursor_location(m_im_context.get(), rect);
 }
 
+void
+Widget::im_activate_osk() noexcept
+{
+#if VTE_GTK == 4
+        gtk_im_context_activate_osk(m_im_context.get(), nullptr);
+#endif
+}
+
 #if VTE_GTK == 3
 
 unsigned
@@ -1717,6 +1728,23 @@ Widget::notify_scroll_value_changed()
         if (kinetic)
                 gtk_scrolled_window_set_kinetic_scrolling(GTK_SCROLLED_WINDOW(sw), true);
 #endif // VTE_GTK == 4
+}
+
+void
+Widget::notify_termprops_changed(int const* props,
+                                 int n_props) noexcept
+{
+        m_in_termprops_changed_emission = true;
+
+        auto retval = gboolean{};
+        g_signal_emit(object(),
+                      signals[SIGNAL_TERMPROPS_CHANGED],
+                      0, /* detail */
+                      props,
+                      n_props,
+                      &retval);
+
+        m_in_termprops_changed_emission = false;
 }
 
 #if VTE_GTK == 3

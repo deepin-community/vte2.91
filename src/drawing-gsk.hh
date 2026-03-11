@@ -20,6 +20,8 @@
 #include <gtk/gtk.h>
 
 #include "drawing-context.hh"
+#include "glib-glue.hh"
+#include "minifont.hh"
 
 #define GDK_ARRAY_NAME vte_glyphs
 #define GDK_ARRAY_TYPE_NAME VteGlyphs
@@ -31,6 +33,16 @@
 
 namespace vte {
 namespace view {
+
+typedef struct _r8g8b8a8
+{
+  uint8_t red;
+  uint8_t green;
+  uint8_t blue;
+  uint8_t alpha;
+} r8g8b8a8;
+
+static_assert(sizeof(r8g8b8a8) == 4, "Wrong size");
 
 class DrawingGsk final : public DrawingContext {
 public:
@@ -108,15 +120,43 @@ public:
                                           int height,
                                           vte::color::rgb const* color) const override;
 
-protected:
-        void draw_text_internal(TextRequest* requests,
-                                gsize n_requests,
-                                uint32_t attr,
-                                vte::color::rgb const* color) override;
+        void draw_text(TextRequest* requests,
+                       gsize n_requests,
+                       uint32_t attr,
+                       vte::color::rgb const* color) override;
+
+        inline void fill_cell_background(size_t column,
+                                         size_t row,
+                                         size_t n_columns,
+                                         vte::color::rgb const* color) override {
+                assert(column + n_columns <= m_background_cols);
+
+                auto const fill = r8g8b8a8{uint8_t(color->red >> 8),
+                                           uint8_t(color->green >> 8),
+                                           uint8_t(color->blue >> 8),
+                                           uint8_t(0xffu)};
+                std::fill_n(m_background_data.get() + (row * m_background_cols + column),
+                            n_columns,
+                            fill);
+
+                m_background_set = true;
+        }
+
+        void begin_background(Rectangle const& rect,
+                              size_t columns,
+                              size_t rows) override;
+        void flush_background(Rectangle const& rect) override;
 
 private:
         GtkSnapshot *m_snapshot{nullptr}; // unowned
         VteGlyphs m_glyphs;
+        MinifontGsk m_minifont{};
+
+        vte::glib::FreePtr<r8g8b8a8> m_background_data;
+        size_t m_background_len;
+        size_t m_background_cols;
+        size_t m_background_rows;
+        bool m_background_set{false};
 
         void flush_glyph_string(PangoFont* font,
                                 const GdkRGBA* rgba);

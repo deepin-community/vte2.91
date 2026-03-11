@@ -538,6 +538,9 @@ public:
         bool set_fallback_scrolling(bool set) { return terminal()->set_fallback_scrolling(set); }
         bool fallback_scrolling() const noexcept { return terminal()->fallback_scrolling(); }
 
+        bool set_enable_legacy_osc777(bool enable) { return terminal()->set_enable_legacy_osc777(enable); }
+        auto enable_legacy_osc777() const noexcept { return terminal()->enable_legacy_osc777(); }
+
         char const* encoding() const noexcept { return m_terminal->encoding(); }
 
         void emit_child_exited(int status) noexcept;
@@ -719,6 +722,7 @@ protected:
 
         void im_focus_in() noexcept;
         void im_focus_out() noexcept;
+        void im_activate_osk() noexcept;
 
         void im_reset() noexcept
         {
@@ -736,6 +740,58 @@ protected:
         void notify_scroll_value_changed();
         void notify_char_size_changed(int width,
                                       int height);
+
+        void notify_termprops_changed(int const* props,
+                                      int n_props) noexcept;
+
+public:
+
+        void register_termprop(std::string_view const& name,
+                               uint32_t id,
+                               vte::terminal::TermpropType type)
+        {
+                vte::terminal::register_termprop(name, id, type);
+        }
+
+        auto get_termprop_info(std::string_view const& name) const
+        {
+                return vte::terminal::get_termprop_info(name);
+        }
+
+        auto get_termprop_info(int id) const
+        {
+                return vte::terminal::get_termprop_info(id);
+        }
+
+        auto get_termprop_info_checked(int id) const
+        {
+                auto const info = vte::terminal::get_termprop_info(id);
+
+                return info &&
+                        (!(unsigned(info->flags()) & unsigned(vte::terminal::TermpropFlags::EPHEMERAL)) ||
+                         m_in_termprops_changed_emission) ? info : nullptr;
+        }
+
+        auto get_termprop(vte::terminal::TermpropInfo const& info) const
+        {
+                return terminal()->get_termprop(info);
+        }
+
+        void reset_termprop(vte::terminal::TermpropInfo const& info) const
+        {
+                terminal()->reset_termprop(info);
+        }
+
+        void set_no_legacy_signals() noexcept
+        {
+                m_no_legacy_signals = true;
+                terminal()->set_no_legacy_signals();
+        }
+
+        bool get_no_legacy_signals() const noexcept
+        {
+                return m_no_legacy_signals;
+        }
 
 public: // FIXMEchpe
         void im_preedit_changed() noexcept;
@@ -805,6 +861,9 @@ private:
         VteAlign m_yalign{VTE_ALIGN_START};
         bool m_xfill{true};
         bool m_yfill{true};
+
+        bool m_no_legacy_signals{false};
+        bool m_in_termprops_changed_emission{false};
 
 #if VTE_GTK == 4
         GdkToplevelState m_root_surface_state{GdkToplevelState(0)};

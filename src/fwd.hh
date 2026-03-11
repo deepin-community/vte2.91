@@ -19,6 +19,8 @@
 
 namespace vte {
 
+class uuid;
+
 namespace base {
 
 class Pty;
@@ -35,6 +37,13 @@ class ScrollEvent;
 class Widget;
 
 } // namespace platform
+
+namespace terminal {
+
+enum class TermpropType;
+class Termprop;
+
+} // namespace terminal
 
 namespace view {
 
