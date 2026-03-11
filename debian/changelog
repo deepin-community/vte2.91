@@ -1,8 +1,175 @@
-vte2.91 (0.75.92-1deepin1) unstable; urgency=medium
+vte2.91 (0.80.1-1) unstable; urgency=medium
 
-  * fix CVE-2024-37535
+  * New upstream release
+  * Cherry-pick a background palette fix from the vte-0-80 branch
 
- -- zengwei <zengwei1@uniontech.com>  Thu, 25 Dec 2025 14:44:06 +0800
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Thu, 17 Apr 2025 08:35:15 -0400
+
+vte2.91 (0.80.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Remove i386 patch applied in new release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 17 Mar 2025 11:25:46 -0400
+
+vte2.91 (0.79.91-2) unstable; urgency=medium
+
+  * Cherry-pick patch to fix i386 build
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Sat, 01 Mar 2025 17:36:13 -0500
+
+vte2.91 (0.79.91-1) unstable; urgency=medium
+
+  * New upstream release
+  * Remove i386 workaround that is no longer needed with the new release
+  * Remove terminfo removal patch applied in new release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Sat, 01 Mar 2025 15:29:48 -0500
+
+vte2.91 (0.79.90-2) unstable; urgency=medium
+
+  * Release to unstable (Closes: #1095038)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 18 Feb 2025 18:28:33 -0500
+
+vte2.91 (0.79.90-1) experimental; urgency=medium
+
+  * New upstream release
+  * Add Build-Depends: libfast-float-dev
+  * debian/*.symbols: Add new symbols
+  * Cherry-pick commit to remove custom terminfo
+  * Don't install the .desktop & xdg-terminal-exec files for the test apps
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Tue, 11 Feb 2025 18:29:24 -0500
+
+vte2.91 (0.78.3-3) unstable; urgency=medium
+
+  * Fix i386 build
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Sat, 25 Jan 2025 17:17:09 -0500
+
+vte2.91 (0.78.3-2) unstable; urgency=medium
+
+  * Try to apply the i386 precision tweak to hurd-i386 too
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Sat, 25 Jan 2025 16:21:40 -0500
+
+vte2.91 (0.78.3-1) unstable; urgency=medium
+
+  * New upstream release
+  * Run wrap-and-sort
+  * Opt into Salsa CI (but without blhc)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Sat, 25 Jan 2025 12:09:23 -0500
+
+vte2.91 (0.78.2-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 25 Nov 2024 09:01:59 -0500
+
+vte2.91 (0.78.1-1) unstable; urgency=medium
+
+  * Team upload
+  * New upstream release
+  * Remove version constraints unnecessary since Debian 11
+  * d/README.Debian: Replace information about vte.sh with vte-2.91.sh.
+    The information previously provided in this file was 10 years out
+    of date.
+  * d/control: Add ${gir:Depends}, ${gir:Provides} to -dev packages
+  * d/control: Distinguish between GTK 3 and 4 g-i data.
+    Previously these two packages had identical short descriptions.
+  * d/control: Stop describing GTK 3 as GTK+ 3.0
+  * Register documentation with devhelp and doc-base
+
+ -- Simon McVittie <smcv@debian.org>  Mon, 28 Oct 2024 11:09:55 +0000
+
+vte2.91 (0.78.0-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 16 Sep 2024 08:14:22 -0400
+
+vte2.91 (0.77.92-1) unstable; urgency=medium
+
+  * New upstream release
+  * Revert "libvte-2.91-common: Install private terminfo definition":
+    This feature has been postponed to 0.79/0.80 (or later) (Closes: #1079886)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Wed, 04 Sep 2024 07:52:33 -0400
+
+vte2.91 (0.77.91-2) unstable; urgency=medium
+
+  * On i386, build with -fexcess-precision=fast -ffloat-store
+    to avoid a build test failure
+  * Remove references to kfreebsd
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Thu, 08 Aug 2024 08:11:59 -0400
+
+vte2.91 (0.77.91-1) unstable; urgency=medium
+
+  * New upstream release
+  * libvte-2.91-common: Install private terminfo definition
+  * debian/*.symbols: Update
+  * Remove ptyxis patches: no longer needed
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Wed, 07 Aug 2024 14:18:07 -0400
+
+vte2.91 (0.76.3-6) unstable; urgency=medium
+
+  [ Nathan Pratta Teodosio ]
+  * Update autopkgtest to also test the GTK4 library (Closes: #1074788)
+
+  [ Jeremy Bícha ]
+  * Bump Standards-Version to 4.7.0
+  * Release to unstable (Closes: #1070714)
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Thu, 01 Aug 2024 09:23:43 -0400
+
+vte2.91 (0.76.3-4) experimental; urgency=medium
+
+  * d/libvte-2.91-0-udeb.install: Only include the GTK 3 version in
+    the udeb.
+    This was intended to be the udeb counterpart of libvte-2.91-0. We're
+    still a long way off from moving debian-installer from GTK 2 to 3,
+    so it isn't useful to have a separate libvte-2.91-gtk4-0-udeb for
+    the GTK 4 build yet.
+
+ -- Simon McVittie <smcv@debian.org>  Sun, 28 Jul 2024 16:33:02 -0400
+
+vte2.91 (0.76.3-2) experimental; urgency=medium
+
+  * Add patches needed by ptyxis 46
+  * Add new symbols for those patches
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Sun, 28 Jul 2024 15:02:45 -0400
+
+vte2.91 (0.76.3-1) experimental; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 10 Jun 2024 10:17:58 -0400
+
+vte2.91 (0.76.2-1) experimental; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Wed, 29 May 2024 08:55:28 -0400
+
+vte2.91 (0.76.1-1) experimental; urgency=medium
+
+  * New upstream release
+  * Drop patch applied in new release
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Mon, 29 Apr 2024 10:37:29 -0400
+
+vte2.91 (0.76.0-1) experimental; urgency=medium
+
+  * New upstream release
+  * Bump minimum GTK4 to 4.14
+  * Cherry-pick a patch to fix a bounds check
+
+ -- Jeremy Bícha <jbicha@ubuntu.com>  Thu, 04 Apr 2024 14:48:07 -0400
 
 vte2.91 (0.75.92-1) unstable; urgency=medium
 

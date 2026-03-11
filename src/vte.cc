@@ -114,6 +114,8 @@ static inline double round(double x) {
 namespace vte {
 namespace terminal {
 
+using namespace vte::color_palette;
+
 // _vte_unichar_width() determines the number of cells that a character
 // would occupy. The primary likely case is hoisted into a define so
 // it ends up in the caller without inlining the entire function.
@@ -248,19 +250,6 @@ Terminal::unset_widget() noexcept
         m_real_widget = nullptr;
         m_terminal = nullptr;
         m_widget = nullptr;
-}
-
-/* Reset defaults for character insertion. */
-void
-Terminal::reset_default_attributes(bool reset_osc)
-{
-        auto const hyperlink_idx_save = m_defaults.attr.hyperlink_idx;
-        auto const shell_integration_save = m_defaults.attr.shellintegration();
-        m_defaults = m_color_defaults = basic_cell;
-        if (!reset_osc) {
-                m_defaults.attr.hyperlink_idx = hyperlink_idx_save;
-                m_defaults.attr.set_shellintegration(shell_integration_save);
-        }
 }
 
 //FIXMEchpe this function is bad
@@ -766,7 +755,10 @@ Terminal::invalidate_cursor_once(bool periodic)
 		}
 	}
 
-	if (m_modes_private.DEC_TEXT_CURSOR()) {
+        // Note that even with invisible cursor, still need
+        // to invalidate if preedit is active.
+        // See https://gitlab.gnome.org/GNOME/vte/-/issues/2873 .
+        if (m_modes_private.DEC_TEXT_CURSOR() || m_im_preedit_active) {
                 auto row = m_screen->cursor.row;
 
 		_vte_debug_print(VTE_DEBUG_UPDATES,
@@ -1651,8 +1643,7 @@ Terminal::selection_maybe_swap_endpoints(vte::view::coords const& pos)
                 return;
 
         /* Need to ensure the ringview is updated. */
-        if (!m_ringview.is_updated())
-                ringview_update();
+        ringview_update();
 
         auto current = selection_grid_halfcoords_from_view_coords (pos);
 
@@ -1722,8 +1713,7 @@ Terminal::hyperlink_check_at(double x,
                              double y)
 {
         /* Need to ensure the ringview is updated. */
-        if (!m_ringview.is_updated())
-                ringview_update();
+        ringview_update();
 
         long col, row;
         if (!rowcol_at(x, y, &col, &row))
@@ -1738,8 +1728,7 @@ char*
 Terminal::hyperlink_check(vte::platform::MouseEvent const& event)
 {
         /* Need to ensure the ringview is updated. */
-        if (!m_ringview.is_updated())
-                ringview_update();
+        ringview_update();
 
         long col, row;
         if (!rowcol_from_event(event, &col, &row))
@@ -1783,8 +1772,7 @@ Terminal::regex_match_check(vte::platform::MouseEvent const& event,
                             int *tag)
 {
         /* Need to ensure the ringview is updated. */
-        if (!m_ringview.is_updated())
-                ringview_update();
+        ringview_update();
 
         long col, row;
         if (!rowcol_from_event(event, &col, &row))
@@ -1803,12 +1791,14 @@ Terminal::regex_match_check_at(double x,
                                int *tag)
 {
         /* Need to ensure the ringview is updated. */
-        if (!m_ringview.is_updated())
-                ringview_update();
+        ringview_update();
 
         long col, row;
-        if (!rowcol_at(x, y, &col, &row))
+        if (!rowcol_at(x, y, &col, &row)) {
+                if (tag)
+                        *tag = -1;
                 return nullptr;
+        }
 
         /* FIXME Shouldn't rely on a deprecated, not sub-row aware method. */
         // FIXMEchpe fix this scroll_delta substraction!
@@ -1824,8 +1814,7 @@ Terminal::regex_match_check_extra_at(double x,
                                      char** matches)
 {
         /* Need to ensure the ringview is updated. */
-        if (!m_ringview.is_updated())
-                ringview_update();
+        ringview_update();
 
         long col, row;
         if (!rowcol_at(x, y, &col, &row))
@@ -1844,8 +1833,7 @@ Terminal::regex_match_check_extra(vte::platform::MouseEvent const& event,
                                   char** matches)
 {
         /* Need to ensure the ringview is updated. */
-        if (!m_ringview.is_updated())
-                ringview_update();
+        ringview_update();
 
         long col, row;
         if (!rowcol_from_event(event, &col, &row))
@@ -2095,6 +2083,7 @@ Terminal::set_encoding(char const* charset,
                         return true;
 
                 m_converter.reset();
+                m_oneoff_decoder.reset();
                 m_primary_data_syntax = DataSyntax::ECMA48_UTF8;
         } else {
                 if (primary_data_syntax() == DataSyntax::ECMA48_PCTERM &&
@@ -2266,11 +2255,24 @@ Terminal::get_color(int entry) const
 	return nullptr;
 }
 
+vte::color::rgb const*
+Terminal::get_color(color_palette::ColorPaletteIndex entry) const noexcept
+{
+        return get_color(entry.value());
+}
+
+auto
+Terminal::get_color_opt(const ColorPaletteIndex entry) const noexcept -> std::optional<vte::color::rgb>
+{
+        auto const color = get_color(entry);
+        return color != nullptr ? std::make_optional(*color) : std::nullopt;
+}
+
 /* Set up a palette entry with a more-or-less match for the requested color. */
 void
 Terminal::set_color(int entry,
-                              int source,
-                              vte::color::rgb const& proposed)
+                    color_palette::ColorSource source_,
+                    vte::color::rgb const& proposed)
 {
         g_assert(entry >= 0 && entry < VTE_PALETTE_SIZE);
 
@@ -2278,9 +2280,10 @@ Terminal::set_color(int entry,
 
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Set %s color[%d] to (%04x,%04x,%04x).\n",
-                         source == VTE_COLOR_SOURCE_ESCAPE ? "escape" : "API",
+                         source_ == color_palette::ColorSource::Escape ? "escape" : "API",
                          entry, proposed.red, proposed.green, proposed.blue);
 
+        auto const source = vte::to_integral(source_);
         if (palette_color->sources[source].is_set &&
             palette_color->sources[source].color == proposed) {
                 return;
@@ -2300,8 +2303,16 @@ Terminal::set_color(int entry,
 }
 
 void
+Terminal::set_color(color_palette::ColorPaletteIndex entry,
+                    color_palette::ColorSource source,
+                    vte::color::rgb const& proposed)
+{
+        return set_color(entry.value(), source, proposed);
+}
+
+void
 Terminal::reset_color(int entry,
-                                int source)
+                      color_palette::ColorSource source_)
 {
         g_assert(entry >= 0 && entry < VTE_PALETTE_SIZE);
 
@@ -2309,9 +2320,10 @@ Terminal::reset_color(int entry,
 
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Reset %s color[%d].\n",
-                         source == VTE_COLOR_SOURCE_ESCAPE ? "escape" : "API",
+                         source_ == color_palette::ColorSource::Escape ? "escape" : "API",
                          entry);
 
+        auto const source = vte::to_integral(source_);
         if (!palette_color->sources[source].is_set) {
                 return;
         }
@@ -2326,6 +2338,13 @@ Terminal::reset_color(int entry,
 		invalidate_cursor_once();
 	else
 		invalidate_all();
+}
+
+void
+Terminal::reset_color(color_palette::ColorPaletteIndex entry,
+                      color_palette::ColorSource source)
+{
+        return reset_color(entry.value(), source);
 }
 
 bool
@@ -2460,9 +2479,9 @@ Terminal::set_colors(vte::color::rgb const* foreground,
 
 		/* Set up the color entry. */
                 if (unset)
-                        reset_color(i, VTE_COLOR_SOURCE_API);
+                        reset_color(i, color_palette::ColorSource::API);
                 else
-                        set_color(i, VTE_COLOR_SOURCE_API, color);
+                        set_color(i, color_palette::ColorSource::API, color);
 	}
 }
 
@@ -2479,7 +2498,7 @@ Terminal::set_color_bold(vte::color::rgb const& color)
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Set %s color to (%04x,%04x,%04x).\n", "bold",
                          color.red, color.green, color.blue);
-        set_color(VTE_BOLD_FG, VTE_COLOR_SOURCE_API, color);
+        set_color(ColorPaletteIndex::bold_fg(), ColorSource::API, color);
 }
 
 void
@@ -2487,7 +2506,7 @@ Terminal::reset_color_bold()
 {
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Reset %s color.\n", "bold");
-        reset_color(VTE_BOLD_FG, VTE_COLOR_SOURCE_API);
+        reset_color(ColorPaletteIndex::bold_fg(), ColorSource::API);
 }
 
 /*
@@ -2502,7 +2521,7 @@ Terminal::set_color_foreground(vte::color::rgb const& color)
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Set %s color to (%04x,%04x,%04x).\n", "foreground",
                          color.red, color.green, color.blue);
-	set_color(VTE_DEFAULT_FG, VTE_COLOR_SOURCE_API, color);
+	set_color(ColorPaletteIndex::default_fg(), ColorSource::API, color);
 }
 
 /*
@@ -2519,7 +2538,7 @@ Terminal::set_color_background(vte::color::rgb const& color)
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Set %s color to (%04x,%04x,%04x).\n", "background",
                          color.red, color.green, color.blue);
-	set_color(VTE_DEFAULT_BG, VTE_COLOR_SOURCE_API, color);
+	set_color(ColorPaletteIndex::default_bg(), ColorSource::API, color);
 }
 
 /*
@@ -2536,7 +2555,7 @@ Terminal::set_color_cursor_background(vte::color::rgb const& color)
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Set %s color to (%04x,%04x,%04x).\n", "cursor background",
                          color.red, color.green, color.blue);
-	set_color(VTE_CURSOR_BG, VTE_COLOR_SOURCE_API, color);
+	set_color(ColorPaletteIndex::cursor_bg(), ColorSource::API, color);
 }
 
 void
@@ -2544,7 +2563,7 @@ Terminal::reset_color_cursor_background()
 {
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Reset %s color.\n", "cursor background");
-        reset_color(VTE_CURSOR_BG, VTE_COLOR_SOURCE_API);
+        reset_color(ColorPaletteIndex::cursor_bg(), ColorSource::API);
 }
 
 /*
@@ -2561,7 +2580,7 @@ Terminal::set_color_cursor_foreground(vte::color::rgb const& color)
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Set %s color to (%04x,%04x,%04x).\n", "cursor foreground",
                          color.red, color.green, color.blue);
-	set_color(VTE_CURSOR_FG, VTE_COLOR_SOURCE_API, color);
+	set_color(ColorPaletteIndex::cursor_fg(), ColorSource::API, color);
 }
 
 void
@@ -2569,7 +2588,7 @@ Terminal::reset_color_cursor_foreground()
 {
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Reset %s color.\n", "cursor foreground");
-        reset_color(VTE_CURSOR_FG, VTE_COLOR_SOURCE_API);
+        reset_color(ColorPaletteIndex::cursor_fg(), ColorSource::API);
 }
 
 /*
@@ -2587,7 +2606,7 @@ Terminal::set_color_highlight_background(vte::color::rgb const& color)
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Set %s color to (%04x,%04x,%04x).\n", "highlight background",
                          color.red, color.green, color.blue);
-	set_color(VTE_HIGHLIGHT_BG, VTE_COLOR_SOURCE_API, color);
+	set_color(ColorPaletteIndex::highlight_bg(), ColorSource::API, color);
 }
 
 void
@@ -2595,7 +2614,7 @@ Terminal::reset_color_highlight_background()
 {
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Reset %s color.\n", "highlight background");
-        reset_color(VTE_HIGHLIGHT_BG, VTE_COLOR_SOURCE_API);
+        reset_color(ColorPaletteIndex::highlight_bg(), ColorSource::API);
 }
 
 /*
@@ -2613,7 +2632,7 @@ Terminal::set_color_highlight_foreground(vte::color::rgb const& color)
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Set %s color to (%04x,%04x,%04x).\n", "highlight foreground",
                          color.red, color.green, color.blue);
-	set_color(VTE_HIGHLIGHT_FG, VTE_COLOR_SOURCE_API, color);
+	set_color(ColorPaletteIndex::highlight_fg(), ColorSource::API, color);
 }
 
 void
@@ -2621,7 +2640,7 @@ Terminal::reset_color_highlight_foreground()
 {
         _vte_debug_print(VTE_DEBUG_MISC,
                          "Reset %s color.\n", "highlight foreground");
-        reset_color(VTE_HIGHLIGHT_FG, VTE_COLOR_SOURCE_API);
+        reset_color(ColorPaletteIndex::highlight_fg(), ColorSource::API);
 }
 
 /*
@@ -2648,13 +2667,11 @@ Terminal::reset_color_highlight_foreground()
  * arbitrary rectangles rather than entire rows; we should revise this.
  */
 void
-Terminal::cleanup_fragments(long rownum,
+Terminal::cleanup_fragments(VteRowData* row,
+                            long rownum,
                             long start,
                             long end)
 {
-        VteRowData *row = m_screen->row_data->index_writable(rownum);
-        g_assert(row);
-
         const VteCell *cell_start;
         VteCell *cell_end, *cell_col;
         gboolean cell_start_is_fragment;
@@ -3195,6 +3212,65 @@ Terminal::save_cursor(VteScreen *screen__)
         screen__->saved.character_replacements[0] = m_character_replacements[0];
         screen__->saved.character_replacements[1] = m_character_replacements[1];
         screen__->saved.character_replacement = m_character_replacement;
+}
+
+// [[gnu::always_inline]]
+/* C++23 constexpr */ gunichar
+Terminal::character_replacement(gunichar c) noexcept
+{
+        // DEC Special Character and Line Drawing Set
+        //
+        // References: VT525
+
+        static constinit gunichar const line_drawing_map[32] = {
+                0x0020,  /* _ => blank (space) */
+                0x25c6,  /* ` => diamond */
+                0x2592,  /* a => checkerboard */
+                0x2409,  /* b => HT symbol */
+                0x240c,  /* c => FF symbol */
+                0x240d,  /* d => CR symbol */
+                0x240a,  /* e => LF symbol */
+                0x00b0,  /* f => degree */
+                0x00b1,  /* g => plus/minus */
+                0x2424,  /* h => NL symbol */
+                0x240b,  /* i => VT symbol */
+                0x2518,  /* j => downright corner */
+                0x2510,  /* k => upright corner */
+                0x250c,  /* l => upleft corner */
+                0x2514,  /* m => downleft corner */
+                0x253c,  /* n => cross */
+                0x23ba,  /* o => scan line 1/9 */
+                0x23bb,  /* p => scan line 3/9 */
+                0x2500,  /* q => horizontal line (also scan line 5/9) */
+                0x23bc,  /* r => scan line 7/9 */
+                0x23bd,  /* s => scan line 9/9 */
+                0x251c,  /* t => left t */
+                0x2524,  /* u => right t */
+                0x2534,  /* v => bottom t */
+                0x252c,  /* w => top t */
+                0x2502,  /* x => vertical line */
+                0x2264,  /* y => <= */
+                0x2265,  /* z => >= */
+                0x03c0,  /* { => pi */
+                0x2260,  /* | => not equal */
+                0x00a3,  /* } => pound currency sign */
+                0x00b7,  /* ~ => bullet */
+        };
+
+	/* If we've enabled the special drawing set, map the characters to
+	 * Unicode. */
+        if (*m_character_replacement == VTE_CHARACTER_REPLACEMENT_LINE_DRAWING) [[unlikely]] {
+                if (c >= 95 && c <= 126)
+                        return line_drawing_map[c - 95];
+        }
+
+        [[likely]] return c;
+}
+
+int
+Terminal::character_width(gunichar c) noexcept
+{
+        return _vte_unichar_width(c, m_utf8_ambiguous_width);
 }
 
 /* Insert a single character into the stored data array.
@@ -3927,9 +4003,10 @@ Terminal::process_incoming()
 
         if (context.m_modified) {
                 /* Keep the cursor on-screen if we scroll on output, or if
-                 * we're currently at the bottom of the buffer. */
+                 * we're currently at the bottom of the buffer.
+                 * Also make sure the alternate screen is correctly positioned. */
                 update_insert_delta();
-                if (m_scroll_on_output || context.m_bottom) {
+                if (m_scroll_on_output || context.m_bottom || m_screen == &m_alternate_screen) {
                         scroll_to_bottom();
                 }
                 /* Deselect the current selection if its contents are changed
@@ -4071,7 +4148,7 @@ Terminal::process_incoming_utf8(ProcessingContext& context,
                                         single_width_chars[single_width_chars_count++] = *ip;
                                         ip++;
                                 }
-                                if (ip < iend || *ip >= 0x80) {
+                                if (ip < iend && *ip >= 0x80) {
                                         /* Continue with UTF-8 (possibly including further ASCII) non-control chars. */
                                         /* This is just a little bit slower than the ASCII loop above. */
                                         vte::base::UTF8Decoder decoder;
@@ -4799,7 +4876,7 @@ Terminal::reply(vte::parser::Sequence const& seq,
                           char const* format,
                           ...) noexcept
 {
-        char buf[128];
+        char buf[8192];
         va_list vargs;
 
         va_start(vargs, format);
@@ -5970,7 +6047,7 @@ Terminal::feed_mouse_event(vte::grid::coords const& rowcol /* confined */,
                                      bool is_drag,
                                      bool is_release)
 {
-	unsigned char cb = 0;
+        unsigned char cb;
 
         /* Don't send events on scrollback contents: bug 755187. */
         if (grid_coords_in_scrollback(rowcol))
@@ -5985,21 +6062,31 @@ Terminal::feed_mouse_event(vte::grid::coords const& rowcol /* confined */,
         case 0:                 /* No button, just dragging. */
                 cb = 3;
                 break;
-	case 1:			/* Left. */
-		cb = 0;
-		break;
-	case 2:			/* Middle. */
-		cb = 1;
-		break;
-	case 3:			/* Right. */
-		cb = 2;
-		break;
-	case 4:
-		cb = 64;	/* Scroll up. */
-		break;
-	case 5:
-		cb = 65;	/* Scroll down. */
-		break;
+        case 1:                 /* Left. */
+        case 2:                 /* Middle. */
+        case 3:                 /* Right. */
+                cb = button - 1;
+                break;
+        case 4:                 /* Scroll up. */
+        case 5:                 /* Scroll down. */
+        case 6:                 /* Scroll left. */
+        case 7:                 /* Scroll right. */
+                cb = button - 4 + 64;
+                break;
+        case 8:                 /* Back. */
+        case 9:                 /* Forward. */
+        case 10:                /* ? */
+        case 11:                /* ? */
+                cb = button - 8 + 128;
+                break;
+        case 12:                /* ? */
+        case 13:                /* ? */
+        case 14:                /* ? */
+        case 15:                /* ? */
+                cb = button - 12 + 192;
+                break;
+        default:
+                return false;
 	}
 
 	/* With the exception of the 1006 mode, button release is also encoded here. */
@@ -6032,7 +6119,7 @@ Terminal::feed_mouse_event(vte::grid::coords const& rowcol /* confined */,
                 send(is_release ? VTE_REPLY_XTERM_MOUSE_EXT_SGR_REPORT_BUTTON_RELEASE
                                 : VTE_REPLY_XTERM_MOUSE_EXT_SGR_REPORT_BUTTON_PRESS,
                      {cb, (int)cx, (int)cy});
-	} else if (cx <= 223 && cy <= 223) {
+        } else if (cb <= 223 && cx <= 223 && cy <= 223) {
 		/* legacy mode */
                 char buf[8];
                 size_t len = g_snprintf(buf, sizeof(buf), _VTE_CAP_CSI "M%c%c%c", 32 + cb, 32 + (guchar)cx, 32 + (guchar)cy);
@@ -6144,16 +6231,8 @@ Terminal::maybe_send_mouse_drag(vte::grid::coords const& unconfined_rowcol,
 		return false;
 	}
 
-        /* As per xterm, report the leftmost pressed button - if any. */
-        int button;
-        if (m_mouse_pressed_buttons & 1)
-                button = 1;
-        else if (m_mouse_pressed_buttons & 2)
-                button = 2;
-        else if (m_mouse_pressed_buttons & 4)
-                button = 3;
-        else
-                button = 0;
+        /* As per xterm, report the lowest pressed button - if any. */
+        int button = ffs(m_mouse_pressed_buttons);
 
         return feed_mouse_event(rowcol,
                                 button,
@@ -6698,11 +6777,13 @@ Terminal::get_selected_text(GString *string,
 
 #if VTE_DEBUG
 unsigned int
-Terminal::checksum_area(vte::grid::row_t start_row,
-                                  vte::grid::column_t start_col,
-                                  vte::grid::row_t end_row,
-                                  vte::grid::column_t end_col)
+Terminal::checksum_area(vte::grid_rect rect)
 {
+        vte::grid::row_t const start_row = rect.top() + m_screen->insert_delta;
+        vte::grid::row_t const end_row = rect.bottom() + m_screen->insert_delta;
+        vte::grid::column_t const start_col = rect.left();
+        vte::grid::column_t const end_col = rect.right() + 1;
+
         unsigned int checksum = 0;
         VteCharAttrList attributes;
         const VteCellAttr *attr;
@@ -7311,7 +7392,7 @@ Terminal::widget_mouse_press(vte::platform::MouseEvent const& event)
 		default:
 			break;
 		}
-                if (event.button_value() >= 1 && event.button_value() <= 3) {
+                if (event.button_value() >= 1 && event.button_value() <= 15) {
                         if (handled)
                                 m_mouse_handled_buttons |= (1 << (event.button_value() - 1));
                         else
@@ -7395,7 +7476,7 @@ Terminal::widget_mouse_press(vte::platform::MouseEvent const& event)
         }
 
 	/* Save the pointer state for later use. */
-        if (event.button_value() >= 1 && event.button_value() <= 3)
+        if (event.button_value() >= 1 && event.button_value() <= 15)
                 m_mouse_pressed_buttons |= (1 << (event.button_value() - 1));
 
 	m_mouse_last_position = pos;
@@ -7430,6 +7511,8 @@ Terminal::widget_mouse_release(vte::platform::MouseEvent const& event)
         case vte::platform::EventBase::Type::eMOUSE_RELEASE:
                 switch (event.button()) {
                 case vte::platform::MouseEvent::Button::eLEFT:
+                        if (!m_selecting)
+                                m_real_widget->im_activate_osk();
                         if ((m_mouse_handled_buttons & 1) != 0)
                                 handled = maybe_end_selection();
 			break;
@@ -7450,7 +7533,7 @@ Terminal::widget_mouse_release(vte::platform::MouseEvent const& event)
 	}
 
 	/* Save the pointer state for later use. */
-        if (event.button_value() >= 1 && event.button_value() <= 3)
+        if (event.button_value() >= 1 && event.button_value() <= 15)
                 m_mouse_pressed_buttons &= ~(1 << (event.button_value() - 1));
 
 	m_mouse_last_position = pos;
@@ -8133,13 +8216,15 @@ Terminal::set_size(long columns,
 		if (!allocating)
 			gtk_widget_queue_resize(m_widget); // FIXMEgtk4?
 #endif
-
-                m_ringview.invalidate();
-                invalidate_all();
-                match_contents_clear();
-		/* Our visible text changed. */
-		emit_text_modified();
 	}
+
+        /* The visible bits might have changed even if the dimension in characters didn't,
+         * so call these unconditionally: https://gitlab.gnome.org/GNOME/vte/-/issues/2829 */
+        m_ringview.invalidate();
+        invalidate_all();
+        match_contents_clear();
+        /* Our visible text changed. */
+        emit_text_modified();
 }
 
 void
@@ -8182,8 +8267,13 @@ Terminal::Terminal(vte::platform::Widget* w,
         m_widget(&t->widget),
         m_normal_screen(VTE_SCROLLBACK_INIT, true),
         m_alternate_screen(VTE_ROWS, false),
-        m_screen(&m_normal_screen)
+        m_screen(&m_normal_screen),
+        m_termprop_values(vte::terminal::n_registered_termprops()),
+        m_termprops_dirty(vte::terminal::n_registered_termprops())
 {
+        assert(m_termprop_values.size() == vte::terminal::n_registered_termprops());
+        assert(m_termprops_dirty.size() == vte::terminal::n_registered_termprops());
+
         /* Inits allocation to 1x1 @ -1,-1 */
         cairo_rectangle_int_t allocation;
         gtk_widget_get_allocation(m_widget, &allocation);
@@ -8219,12 +8309,12 @@ Terminal::Terminal(vte::platform::Widget* w,
 
         m_match_contents = g_string_new(nullptr);
 
-        reset_default_attributes(true);
+        m_defaults = m_color_defaults = basic_cell;
 
 	/* Set up the desired palette. */
 	set_colors_default();
 	for (auto i = 0; i < VTE_PALETTE_SIZE; i++)
-		m_palette[i].sources[VTE_COLOR_SOURCE_ESCAPE].is_set = FALSE;
+		m_palette[i].sources[vte::to_integral(color_palette::ColorSource::Escape)].is_set = false;
 
 	/* Set up I/O encodings. */
 	m_outgoing = _vte_byte_array_new();
@@ -9225,7 +9315,6 @@ Terminal::draw_rows(VteScreen *screen_,
 {
         vte::grid::row_t row;
         vte::grid::column_t i, j, lcol, vcol;
-        int y;
         guint fore = VTE_DEFAULT_FG, nfore, back = VTE_DEFAULT_BG, nback, deco = VTE_DEFAULT_FG, ndeco;
         gboolean hyperlink = FALSE, nhyperlink;  /* non-hovered explicit hyperlink, needs dashed underlining */
         gboolean hilite = FALSE, nhilite;        /* hovered explicit hyperlink or regex match, needs continuous underlining */
@@ -9257,20 +9346,35 @@ Terminal::draw_rows(VteScreen *screen_,
         int const rect_width = get_allocated_width() + m_style_border.left + m_style_border.right;
 #endif
 
+        auto bg_rect = vte::view::Rectangle{0,
+                                            start_y,
+                                            int(column_count * column_width),
+                                            int(row_height * (end_row - start_row))};
+        m_draw.begin_background(bg_rect, column_count, end_row - start_row);
+
         /* The rect contains the area of the row, and is moved row-wise in the loop. */
-        auto rect = vte::view::Rectangle{-m_border.left, start_y, rect_width, row_height};
-        for (row = start_row, y = start_y;
+#if VTE_GTK == 3
+        auto crect = vte::view::Rectangle{-m_border.left, start_y, rect_width, row_height};
+#endif
+        for (row = start_row;
              row < end_row;
-             row++, y += row_height, rect.move_y(y) /* same as rect.y += row_height */) {
+             row++
+#if VTE_GTK == 3
+                     , crect.advance_y(row_height)
+#endif
+             ) {
 #if VTE_GTK == 3
                 /* Check whether we need to draw this row at all */
-                if (cairo_region_contains_rectangle(region, rect.cairo()) == CAIRO_REGION_OVERLAP_OUT)
+                if (cairo_region_contains_rectangle(region, crect.cairo()) == CAIRO_REGION_OVERLAP_OUT)
                         continue;
+
+                auto const y = crect.cairo()->y;
 #endif
 
 		row_data = find_row_data(row);
                 bidirow = m_ringview.get_bidirow(row);
 
+#if VTE_GTK == 3
                 _VTE_DEBUG_IF (VTE_DEBUG_BIDI) {
                         /* Debug: Highlight the paddings of RTL rows with a slightly different background. */
                         if (bidirow->base_is_rtl()) {
@@ -9294,6 +9398,7 @@ Terminal::draw_rows(VteScreen *screen_,
                                                           &bg);
                         }
                 }
+#endif // VTE_GTK == 3
 
                 i = j = 0;
                 /* Walk the line.
@@ -9322,14 +9427,10 @@ Terminal::draw_rows(VteScreen *screen_,
                         if (back != VTE_DEFAULT_BG) {
                                 vte::color::rgb bg;
                                 rgb_from_index<8, 8, 8>(back, bg);
-                                m_draw.fill_rectangle(
-                                                          i * column_width,
-                                                          y,
-                                                          (j - i) * column_width,
-                                                          row_height,
-                                                          &bg);
+                                m_draw.fill_cell_background(i, row - start_row, (j - i), &bg);
                         }
 
+#if VTE_GTK == 3
                         _VTE_DEBUG_IF (VTE_DEBUG_BIDI) {
                                 /* Debug: Highlight RTL letters and RTL rows with a slightly different background. */
                                 vte::color::rgb bg;
@@ -9367,6 +9468,7 @@ Terminal::draw_rows(VteScreen *screen_,
                                                                   &bg);
                                 }
                         }
+#endif // VTE_GTK == 3
 
                         /* We'll need to continue at the first cell which didn't
                          * match the first one in this set. */
@@ -9374,16 +9476,18 @@ Terminal::draw_rows(VteScreen *screen_,
                 } while (i < column_count);
         }
 
+        m_draw.flush_background(bg_rect);
 
         /* Render the text.
          * The rect contains the area of the row (enlarged a bit at the top and bottom
          * to allow the text to overdraw a bit), and is moved row-wise in the loop.
          */
-        rect = vte::view::Rectangle{-m_border.left,
-                                    start_y - cell_overflow_top(),
-                                    rect_width,
-                                    row_height + cell_overflow_top() + cell_overflow_bottom()};
+        auto rect = vte::view::Rectangle{-m_border.left,
+                                         start_y - cell_overflow_top(),
+                                         rect_width,
+                                         row_height + cell_overflow_top() + cell_overflow_bottom()};
 
+        int y;
         for (row = start_row, y = start_y;
              row < end_row;
              row++, y += row_height, rect.advance_y(row_height)) {
@@ -9799,7 +9903,7 @@ Terminal::paint_im_preedit_string()
                                         row_to_pixel(m_screen->cursor.row),
                                         width * columns,
                                         height,
-                                        get_color(VTE_DEFAULT_BG), m_background_alpha);
+                                        get_color(ColorPaletteIndex::default_bg()), m_background_alpha);
                 }
 
 		draw_cells_with_attributes(
@@ -9912,7 +10016,7 @@ Terminal::draw(cairo_region_t const* region) noexcept
                              allocated_width + m_style_border.left + m_style_border.right,
                              allocated_height + m_style_border.top + m_style_border.bottom,
 #endif
-                             get_color(VTE_DEFAULT_BG), m_background_alpha);
+                             get_color(ColorPaletteIndex::default_bg()), m_background_alpha);
         }
 
         /* Clip vertically, for the sake of smooth scrolling. We want the top and bottom paddings to be unused.
@@ -10032,39 +10136,55 @@ bool
 Terminal::widget_mouse_scroll(vte::platform::ScrollEvent const& event)
 {
 	gdouble v;
-	gint cnt, i;
+        gint cnt_x, cnt_y, i;
 	int button;
 
         m_modifiers = event.modifiers();
-        m_mouse_smooth_scroll_delta += event.dy();
+        m_mouse_smooth_scroll_x_delta += event.dx();
+        m_mouse_smooth_scroll_y_delta += event.dy();
 
-	/* If we're running a mouse-aware application, map the scroll event
-	 * to a button press on buttons four and five. */
+        /* If we're running a mouse-aware application, map the scroll event to button presses on buttons 4-7. */
 	if (m_mouse_tracking_mode != MouseTrackingMode::eNONE) {
-		cnt = m_mouse_smooth_scroll_delta;
-		if (cnt == 0)
+                cnt_x = m_mouse_smooth_scroll_x_delta;
+                cnt_y = m_mouse_smooth_scroll_y_delta;
+                if (cnt_x == 0 && cnt_y == 0)
 			return true;
 
                 /* Need to ensure the ringview is updated. */
                 ringview_update();
 
-		m_mouse_smooth_scroll_delta -= cnt;
+                m_mouse_smooth_scroll_x_delta -= cnt_x;
+                m_mouse_smooth_scroll_y_delta -= cnt_y;
 		_vte_debug_print(VTE_DEBUG_EVENTS,
-				"Scroll application by %d lines, smooth scroll delta set back to %f\n",
-				cnt, m_mouse_smooth_scroll_delta);
+                                 "Scroll application by %d lines, %d columns, smooth scroll delta set back to y=%f, x=%f\n",
+                                 cnt_y, cnt_x, m_mouse_smooth_scroll_y_delta, m_mouse_smooth_scroll_x_delta);
 
-		button = cnt > 0 ? 5 : 4;
-		if (cnt < 0)
-			cnt = -cnt;
-		for (i = 0; i < cnt; i++) {
-			/* Encode the parameters and send them to the app. */
+                button = cnt_y > 0 ? 5 : 4;
+                if (cnt_y < 0)
+                        cnt_y = -cnt_y;
+                for (i = 0; i < cnt_y; i++) {
+                        /* Encode the parameters and send them to the app. */
                         feed_mouse_event(confined_grid_coords_from_view_coords(m_mouse_last_position),
                                          button,
                                          false /* not drag */,
                                          false /* not release */);
-		}
+                }
+
+                button = cnt_x > 0 ? 7 : 6;
+                if (cnt_x < 0)
+                        cnt_x = -cnt_x;
+                for (i = 0; i < cnt_x; i++) {
+                        /* Encode the parameters and send them to the app. */
+                        feed_mouse_event(confined_grid_coords_from_view_coords(m_mouse_last_position),
+                                         button,
+                                         false /* not drag */,
+                                         false /* not release */);
+                }
 		return true;
 	}
+
+        /* The modes below only care about vertical scrolling. Don't accumulate horizontal noise. */
+        m_mouse_smooth_scroll_x_delta = 0;
 
         v = MAX (1., ceil (m_row_count /* page increment */ / 10.));
 	_vte_debug_print(VTE_DEBUG_EVENTS,
@@ -10075,36 +10195,34 @@ Terminal::widget_mouse_scroll(vte::platform::ScrollEvent const& event)
 		char *normal;
 		gsize normal_length;
 
-		cnt = v * m_mouse_smooth_scroll_delta;
-		if (cnt == 0)
+                cnt_y = v * m_mouse_smooth_scroll_y_delta;
+                if (cnt_y == 0)
 			return true;
-		m_mouse_smooth_scroll_delta -= cnt / v;
+                m_mouse_smooth_scroll_y_delta -= cnt_y / v;
 		_vte_debug_print(VTE_DEBUG_EVENTS,
-				"Scroll by %d lines, smooth scroll delta set back to %f\n",
-				cnt, m_mouse_smooth_scroll_delta);
+                                "Scroll by %d lines, smooth scroll y_delta set back to %f\n",
+                                cnt_y, m_mouse_smooth_scroll_y_delta);
 
-		/* In the alternate screen there is no scrolling,
-		 * so fake a few cursor keystrokes. */
-
+                /* In the alternate screen there is no scrolling, so fake a few cursor keystrokes (only vertically). */
 		_vte_keymap_map (
-				cnt > 0 ? GDK_KEY_Down : GDK_KEY_Up,
+                                cnt_y > 0 ? GDK_KEY_Down : GDK_KEY_Up,
 				m_modifiers,
                                 m_modes_private.DEC_APPLICATION_CURSOR_KEYS(),
                                 m_modes_private.DEC_APPLICATION_KEYPAD(),
 				&normal,
 				&normal_length);
-		if (cnt < 0)
-			cnt = -cnt;
-		for (i = 0; i < cnt; i++) {
+                if (cnt_y < 0)
+                        cnt_y = -cnt_y;
+                for (i = 0; i < cnt_y; i++) {
 			send_child({normal, normal_length});
 		}
 		g_free (normal);
                 return true;
 	} else if (m_fallback_scrolling) {
 		/* Perform a history scroll. */
-		double dcnt = m_screen->scroll_delta + v * m_mouse_smooth_scroll_delta;
+                double dcnt = m_screen->scroll_delta + v * m_mouse_smooth_scroll_y_delta;
 		queue_adjustment_value_changed_clamped(dcnt);
-		m_mouse_smooth_scroll_delta = 0;
+                m_mouse_smooth_scroll_y_delta = 0;
                 return true;
 	}
         return false;
@@ -10128,6 +10246,17 @@ Terminal::set_text_blink_mode(TextBlinkMode setting)
 
         m_text_blink_mode = setting;
         invalidate_all();
+
+        return true;
+}
+
+bool
+Terminal::set_enable_a11y(bool setting)
+{
+        if (setting == m_enable_a11y)
+                return false;
+
+        m_enable_a11y = setting;
 
         return true;
 }
@@ -10555,6 +10684,7 @@ Terminal::reset(bool clear_tabstops,
         m_modes_ecma.reset();
         m_modes_private.clear_saved();
         m_modes_private.reset();
+        m_decsace_is_rectangle = false; // DECSACE defaults to STREAM
 
         /* Reset tabstops */
         if (clear_tabstops) {
@@ -10570,10 +10700,10 @@ Terminal::reset(bool clear_tabstops,
 
 	/* Reset the color palette. Only the 256 indexed colors, not the special ones, as per xterm. */
 	for (int i = 0; i < 256; i++)
-		m_palette[i].sources[VTE_COLOR_SOURCE_ESCAPE].is_set = FALSE;
+		m_palette[i].sources[vte::to_integral(color_palette::ColorSource::Escape)].is_set = false;
 	/* Reset the default attributes.  Reset the alternate attribute because
 	 * it's not a real attribute, but we need to treat it as one here. */
-        reset_default_attributes(true);
+        m_defaults = m_color_defaults = basic_cell;
         /* Reset charset modes. */
         m_character_replacements[0] = VTE_CHARACTER_REPLACEMENT_NONE;
         m_character_replacements[1] = VTE_CHARACTER_REPLACEMENT_NONE;
@@ -10617,7 +10747,8 @@ Terminal::reset(bool clear_tabstops,
         m_mouse_pressed_buttons = 0;
         m_mouse_handled_buttons = 0;
 	m_mouse_last_position = vte::view::coords(-1, -1);
-	m_mouse_smooth_scroll_delta = 0.;
+        m_mouse_smooth_scroll_x_delta = 0.;
+        m_mouse_smooth_scroll_y_delta = 0.;
 	/* Clear modifiers. */
 	m_modifiers = 0;
 
@@ -10633,6 +10764,9 @@ Terminal::reset(bool clear_tabstops,
 
         /* Reset XTerm window controls */
         m_xterm_wm_iconified = false;
+
+        // Reset termprops
+        reset_termprops();
 }
 
 void
@@ -10771,43 +10905,62 @@ Terminal::emit_pending_signals()
 
 	emit_adjustment_changed();
 
-	if (m_pending_changes & vte::to_integral(PendingChanges::TITLE)) {
-                if (m_window_title != m_window_title_pending) {
-                        m_window_title.swap(m_window_title_pending);
+	if (m_pending_changes & vte::to_integral(PendingChanges::TERMPROPS)) {
+                auto const n_props = m_termprops_dirty.size();
+                auto changed_props = g_newa(int, n_props);
 
+                auto n_changed_props = 0;
+                auto any_ephemeral = false;
+                for (auto i = 0u; i < n_props; ++i) {
+                        if (m_termprops_dirty[i]) {
+                                changed_props[n_changed_props++] = int(i);
+
+                                if (unsigned(get_termprop_info(i)->flags()) &
+                                    unsigned(vte::terminal::TermpropFlags::EPHEMERAL)) {
+                                        any_ephemeral = true;
+                                } else {
+                                        m_termprops_dirty[i] = false;
+                                }
+                        }
+                }
+
+                widget()->notify_termprops_changed(changed_props, n_changed_props);
+
+                // If there was (at least) an epehmeral termprop in this set,
+                // reset its value(s).
+                if (any_ephemeral) {
+                        for (auto i = 0u; i < n_props; ++i) {
+                                if (m_termprops_dirty[i]) {
+                                        m_termprop_values[i] = {};
+                                        m_termprops_dirty[i] = false;
+                                }
+                        }
+                }
+        }
+
+        if (!m_no_legacy_signals) {
+                // Emit deprecated signals and notify:: for deprecated properties,
+
+                if (m_pending_changes & vte::to_integral(PendingChanges::TITLE)) {
                         _vte_debug_print(VTE_DEBUG_SIGNALS,
                                          "Emitting `window-title-changed'.\n");
                         g_signal_emit(freezer.get(), signals[SIGNAL_WINDOW_TITLE_CHANGED], 0);
                         g_object_notify_by_pspec(freezer.get(), pspecs[PROP_WINDOW_TITLE]);
                 }
 
-                m_window_title_pending.clear();
-	}
-
-	if (m_pending_changes & vte::to_integral(PendingChanges::CWD)) {
-                if (m_current_directory_uri != m_current_directory_uri_pending) {
-                        m_current_directory_uri.swap(m_current_directory_uri_pending);
-
+                if (m_pending_changes & vte::to_integral(PendingChanges::CWD)) {
                         _vte_debug_print(VTE_DEBUG_SIGNALS,
                                          "Emitting `current-directory-uri-changed'.\n");
                         g_signal_emit(freezer.get(), signals[SIGNAL_CURRENT_DIRECTORY_URI_CHANGED], 0);
                         g_object_notify_by_pspec(freezer.get(), pspecs[PROP_CURRENT_DIRECTORY_URI]);
                 }
 
-                m_current_directory_uri_pending.clear();
-        }
-
-        if (m_pending_changes & vte::to_integral(PendingChanges::CWF)) {
-                if (m_current_file_uri != m_current_file_uri_pending) {
-                        m_current_file_uri.swap(m_current_file_uri_pending);
-
+                if (m_pending_changes & vte::to_integral(PendingChanges::CWF)) {
                         _vte_debug_print(VTE_DEBUG_SIGNALS,
                                          "Emitting `current-file-uri-changed'.\n");
                         g_signal_emit(freezer.get(), signals[SIGNAL_CURRENT_FILE_URI_CHANGED], 0);
                         g_object_notify_by_pspec(freezer.get(), pspecs[PROP_CURRENT_FILE_URI]);
                 }
-
-                m_current_file_uri_pending.clear();
         }
 
         m_pending_changes = 0;

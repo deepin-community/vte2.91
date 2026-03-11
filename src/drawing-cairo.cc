@@ -137,10 +137,10 @@ DrawingCairo::fill_rectangle(int x,
 }
 
 void
-DrawingCairo::draw_text_internal(TextRequest* requests,
-                                 gsize n_requests,
-                                 uint32_t attr,
-                                 vte::color::rgb const* color)
+DrawingCairo::draw_text(TextRequest* requests,
+                        gsize n_requests,
+                        uint32_t attr,
+                        vte::color::rgb const* color)
 {
         gsize i;
         cairo_scaled_font_t *last_scaled_font = nullptr;
@@ -165,10 +165,12 @@ DrawingCairo::draw_text_internal(TextRequest* requests,
                         vte_bidi_get_mirror_char (c, requests[i].box_mirror, &c);
                 }
 
-                if (m_minifont.unistr_is_local_graphic(c)) {
-                        m_minifont.draw_graphic(*this,
+                if (Minifont::unistr_is_local_graphic(c)) {
+                        m_minifont.draw_graphic(cairo(),
                                                 c,
                                                 color,
+                                                cell_width(),
+                                                cell_height(),
                                                 requests[i].x, requests[i].y,
                                                 font->width(), requests[i].columns, font->height(),
                                                 scale_factor());

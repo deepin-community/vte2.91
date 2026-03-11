@@ -22,6 +22,7 @@
 #include "drawing-gsk.hh"
 #include "fonts-pangocairo.hh"
 #include "graphene-glue.hh"
+#include "refptr.hh"
 
 static inline PangoGlyphInfo *
 vte_glyphs_grow (VteGlyphs *glyphs,
@@ -147,11 +148,26 @@ DrawingGsk::flush_glyph_string(PangoFont *font,
 
 
 void
-DrawingGsk::draw_text_internal(TextRequest* requests,
-                               gsize n_requests,
-                               uint32_t attr,
-                               vte::color::rgb const* color)
+DrawingGsk::draw_text(TextRequest* requests,
+                      gsize n_requests,
+                      uint32_t attr,
+                      vte::color::rgb const* color)
 {
+        if (_vte_debug_on (VTE_DEBUG_DRAW)) {
+                GString *string = g_string_new ("");
+                gchar *str;
+                gsize n;
+                for (n = 0; n < n_requests; n++) {
+                        g_string_append_unichar (string, requests[n].c);
+                }
+                str = g_string_free (string, FALSE);
+                g_printerr ("draw_text (\"%s\", len=%" G_GSIZE_FORMAT ", color=(%d,%d,%d), %s - %s)\n",
+                            str, n_requests, color->red, color->green, color->blue,
+                            (attr & VTE_ATTR_BOLD)   ? "bold"   : "normal",
+                            (attr & VTE_ATTR_ITALIC) ? "italic" : "regular");
+                g_free (str);
+        }
+
         auto font = m_fonts[attr_to_style(attr)];
         gsize i;
 
@@ -173,7 +189,7 @@ DrawingGsk::draw_text_internal(TextRequest* requests,
                         vte_bidi_get_mirror_char (c, requests[i].box_mirror, &c);
                 }
 
-                if (m_minifont.unistr_is_local_graphic(c)) {
+                if (Minifont::unistr_is_local_graphic(c)) {
                         m_minifont.draw_graphic(*this,
                                                 c,
                                                 color,
@@ -283,6 +299,45 @@ DrawingGsk::draw_surface_with_color_mask(GdkTexture *texture,
         gtk_snapshot_pop(m_snapshot);
         gtk_snapshot_append_color(m_snapshot, &rgba, &bounds);
         gtk_snapshot_pop(m_snapshot);
+}
+
+void
+DrawingGsk::begin_background(Rectangle const& rect,
+                             size_t columns,
+                             size_t rows)
+{
+        m_background_cols = columns;
+        m_background_rows = rows;
+        m_background_len = columns * rows;
+        m_background_set = false;
+        m_background_data = vte::glib::take_free_ptr(g_new0(r8g8b8a8, m_background_len));
+}
+
+void
+DrawingGsk::flush_background(Rectangle const& rect)
+{
+        if (m_background_set) {
+                auto bytes = vte::take_freeable
+                        (g_bytes_new_take(m_background_data.release(),
+                                          m_background_len * sizeof(r8g8b8a8)));
+                auto texture = vte::glib::take_ref
+                        (gdk_memory_texture_new(m_background_cols,
+                                                m_background_rows,
+                                                GDK_MEMORY_R8G8B8A8,
+                                                bytes.get(),
+                                                m_background_cols * sizeof(r8g8b8a8)));
+                gtk_snapshot_append_scaled_texture(m_snapshot,
+                                                   texture.get(),
+                                                   GSK_SCALING_FILTER_NEAREST,
+                                                   rect.graphene());
+        } else {
+                m_background_data.reset();
+        }
+
+        m_background_cols = 0;
+        m_background_rows = 0;
+        m_background_len = 0;
+        m_background_set = false;
 }
 
 } // namespace view

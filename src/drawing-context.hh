@@ -57,14 +57,16 @@ public:
         {
         }
 
-        constexpr Rectangle(cairo_rectangle_int_t const *rect) {
-                Rectangle(rect->x, rect->y, rect->width, rect->height);
+        constexpr Rectangle(cairo_rectangle_int_t const *rect) :
+                Rectangle(rect->x, rect->y, rect->width, rect->height)
+        {
         }
 
 #if VTE_GTK == 4
-        constexpr Rectangle(graphene_rect_t const *rect) {
+        constexpr Rectangle(graphene_rect_t const *rect) :
                 Rectangle(rect->origin.x, rect->origin.y,
-                          rect->size.width, rect->size.height);
+                          rect->size.width, rect->size.height)
+        {
         }
 #endif
 
@@ -203,6 +205,15 @@ public:
                                     int height,
                                     vte::color::rgb const* color) const = 0;
 
+        virtual void begin_background(Rectangle const& rect,
+                                      size_t columns,
+                                      size_t rows) = 0;
+        virtual void fill_cell_background(size_t column,
+                                          size_t row,
+                                          size_t n_colums,
+                                          vte::color::rgb const* color) = 0;
+        virtual void flush_background(Rectangle const& rect) = 0;
+
         virtual void draw_surface_with_color_mask(
 #if VTE_GTK == 3
                                                   cairo_surface_t *surface,
@@ -238,15 +249,10 @@ public:
                             uint32_t attr,
                             int& left,
                             int& right);
-        void draw_text(TextRequest* requests,
-                       gsize n_requests,
-                       uint32_t attr,
-                       vte::color::rgb const* color);
-        bool draw_char(TextRequest* request,
-                       uint32_t attr,
-                       vte::color::rgb const* color);
-        bool has_char(vteunistr c,
-                      uint32_t attr);
+        virtual void draw_text(TextRequest* requests,
+                               gsize n_requests,
+                               uint32_t attr,
+                               vte::color::rgb const* color) = 0;
         void draw_line(int x,
                        int y,
                        int xp,
@@ -261,10 +267,6 @@ public:
         inline void set_scale_factor(int scale_factor) { m_scale_factor = scale_factor; }
 
 protected:
-        virtual void draw_text_internal(TextRequest* requests,
-                                        gsize n_requests,
-                                        uint32_t attr,
-                                        vte::color::rgb const* color) = 0;
 
         // std::array<vte::base::RefPtr<FontInfo>, 4> m_fonts{};
         FontInfo* m_fonts[4]{nullptr, nullptr, nullptr, nullptr};
@@ -272,9 +274,6 @@ protected:
         int m_cell_height{1};
         int m_scale_factor{1};
         GtkBorder m_char_spacing{1, 1, 1, 1};
-
-
-        Minifont m_minifont{};
 
         /* Cache the undercurl's rendered look. */
         vte::Freeable<cairo_surface_t> m_undercurl_surface{};

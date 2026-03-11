@@ -50,8 +50,12 @@
 #include "parser-glue.hh"
 #include "modes.hh"
 #include "tabstops.hh"
+#include "termprops.hh"
 #include "refptr.hh"
 #include "fwd.hh"
+#include "color-palette.hh"
+#include "osc-colors.hh"
+#include "rect.hh"
 
 #include "pcre2-glue.hh"
 #include "vteregexinternal.hh"
@@ -64,6 +68,8 @@
 #include <queue>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -163,6 +169,10 @@ public:
 
 namespace vte {
 
+        // Inclusive rect of integer
+        using grid_rect = vte::rect_inclusive<int>;
+        using grid_point = vte::point<int>;
+
 /* Tracks the DECSTBM / DECSLRM scrolling region, a.k.a. margins.
  * For effective operation, it stores in a single boolean if at its default state. */
 struct scrolling_region {
@@ -200,6 +210,18 @@ public:
         void reset_horizontal() noexcept { set_horizontal(0, m_width - 1); }
         void reset() noexcept { reset_vertical(); reset_horizontal(); }
         void reset_with_size(int w, int h) noexcept { m_width = w; m_height = h; reset(); }
+
+        // FIXME inherit from grid_rect instead
+        constexpr grid_rect as_rect() const noexcept
+        {
+                return grid_rect{left(), top(), right(), bottom()};
+        }
+
+        constexpr grid_point origin() const noexcept
+        {
+                return grid_point{left(), top()};
+        }
+
 }; // class scrolling_region
 
 namespace platform {
@@ -329,6 +351,7 @@ public:
 
         vte::terminal::modes::ECMA m_modes_ecma{};
         vte::terminal::modes::Private m_modes_private{};
+        bool m_decsace_is_rectangle{false};
 
 	/* PTY handling data. */
         vte::base::RefPtr<vte::base::Pty> m_pty{};
@@ -404,7 +427,11 @@ public:
 
 #if WITH_ICU
         /* Legacy charset support */
+        // The main converter for the PTY stream
         std::unique_ptr<vte::base::ICUConverter> m_converter;
+        // Extra converter for use in one-off conversion e.g. for
+        // DECFRA, instantiated on-demand
+        std::unique_ptr<vte::base::ICUDecoder> m_oneoff_decoder;
 #endif /* WITH_ICU */
 
         char const* encoding() const noexcept
@@ -530,14 +557,15 @@ public:
         time_t m_last_keypress_time;
 
         MouseTrackingMode m_mouse_tracking_mode{MouseTrackingMode::eNONE};
-        guint m_mouse_pressed_buttons;      /* bits 0, 1, 2 resp. for buttons 1, 2, 3 */
+        guint m_mouse_pressed_buttons;      /* bits 0..14 resp. for buttons 1..15 */
         guint m_mouse_handled_buttons;      /* similar bitmap for buttons we handled ourselves */
         /* The last known position the mouse pointer from an event. We don't store
          * this in grid coordinates because we want also to check if they were outside
          * the viewable area, and also want to catch in-cell movements if they make the pointer visible.
          */
         vte::view::coords m_mouse_last_position{-1, -1};
-        double m_mouse_smooth_scroll_delta{0.0};
+        double m_mouse_smooth_scroll_x_delta{0.0};
+        double m_mouse_smooth_scroll_y_delta{0.0};
         bool mouse_autoscroll_timer_callback();
         vte::glib::Timer m_mouse_autoscroll_timer{std::bind(&Terminal::mouse_autoscroll_timer_callback,
                                                             this),
@@ -710,19 +738,15 @@ public:
         gboolean m_cursor_moved_pending;
         gboolean m_contents_changed_pending;
 
-        std::string m_window_title{};
-        std::string m_current_directory_uri{};
-        std::string m_current_file_uri{};
-        std::string m_window_title_pending{};
-        std::string m_current_directory_uri_pending{};
-        std::string m_current_file_uri_pending{};
-
         std::vector<std::string> m_window_title_stack{};
 
         enum class PendingChanges {
-                TITLE = 1u << 0,
-                CWD   = 1u << 1,
-                CWF   = 1u << 2,
+                TERMPROPS = 1u << 0,
+
+                // deprecated but still emitted for now
+                TITLE = 1u << 1,
+                CWD   = 1u << 2,
+                CWF   = 1u << 3,
         };
         unsigned m_pending_changes{0};
 
@@ -776,6 +800,9 @@ public:
         const char *m_hyperlink_hover_uri; /* data is owned by the ring */
         long m_hyperlink_auto_id{0};
 
+        /* Accessibility support */
+        bool m_enable_a11y{true};
+
         /* RingView and friends */
         vte::base::RingView m_ringview;
         bool m_enable_bidi{true};
@@ -786,6 +813,68 @@ public:
 
         /* BiDi parameters outside of ECMA and DEC private modes */
         guint m_bidi_rtl : 1;
+
+        // Termprops
+        std::vector<TermpropValue> m_termprop_values{};
+        std::vector<bool> m_termprops_dirty{}; // FIMXE: make this a dynamic_bitset
+
+        auto get_termprop_info(std::string_view const& name) const
+        {
+                return vte::terminal::get_termprop_info(name);
+        }
+
+        auto get_termprop_info(int id) const
+        {
+                return vte::terminal::get_termprop_info(id);
+        }
+
+        auto get_termprop(TermpropInfo const& info) const
+        {
+                return std::addressof(m_termprop_values.at(info.id()));
+        }
+
+        auto get_termprop(TermpropInfo const& info)
+        {
+                return std::addressof(m_termprop_values.at(info.id()));
+        }
+
+        void reset_termprop(TermpropInfo const& info)
+        {
+                auto const is_valueless = info.type() == vte::terminal::TermpropType::VALUELESS;
+                auto value = get_termprop(info);
+                if (value &&
+                    !std::holds_alternative<std::monostate>(*value)) {
+                        *value = {};
+                        m_termprops_dirty.at(info.id()) = !is_valueless;
+                } else if (is_valueless) {
+                        m_termprops_dirty.at(info.id()) = false;
+                }
+        }
+
+        void reset_termprops()
+        {
+                for (auto const& info: vte::terminal::s_registered_termprops) {
+                        reset_termprop(info);
+                }
+
+                m_pending_changes |= vte::to_integral(PendingChanges::TERMPROPS);
+        }
+
+        bool m_enable_legacy_osc777{false};
+
+        bool set_enable_legacy_osc777(bool enable) noexcept
+        {
+                if (enable == m_enable_legacy_osc777)
+                        return false;
+
+                m_enable_legacy_osc777 = enable;
+                return true;
+        }
+
+        constexpr auto enable_legacy_osc777() const noexcept
+        {
+                return m_enable_legacy_osc777;
+        }
 
 public:
 
@@ -816,7 +905,7 @@ public:
 
                 while G_UNLIKELY (long(ring->next()) < position) {
                         row = ring->append(get_bidi_flags());
-                        if (not_default_bg)
+                        if (fill && not_default_bg)
                                 _vte_row_data_fill (row, &m_color_defaults, m_column_count);
                 }
                 row = ring->insert(position, get_bidi_flags());
@@ -871,9 +960,19 @@ public:
                 ensure_row();
                 cleanup_fragments(m_screen->cursor.row, start, end);
         }
-        void cleanup_fragments(long rownum,
+        void cleanup_fragments(VteRowData* row,
+                               long rownum,
                                long start,
                                long end);
+        void cleanup_fragments(long rownum,
+                               long start,
+                               long end) {
+                auto const row = m_screen->row_data->index_writable(rownum);
+                if (!row)
+                        return;
+
+                cleanup_fragments(row, rownum, start, end);
+        }
 
         void scroll_text_up(scrolling_region const& scrolling_region,
                             vte::grid::row_t amount, bool fill);
@@ -892,6 +991,9 @@ public:
 
         void restore_cursor(VteScreen *screen__);
         void save_cursor(VteScreen *screen__);
+
+        /* [[gnu::always_inline]] */ /* C++23 constexpr */ gunichar character_replacement(gunichar c) noexcept;
+        int character_width(gunichar c) noexcept;
 
         void insert_char(gunichar c,
                          bool invalidate_now);
@@ -1127,7 +1229,7 @@ public:
         void reset_decoder();
 
         void feed(std::string_view const& data,
-                  bool start_processsing_ = true);
+                  bool start_processing_ = true);
         void feed_child(char const* data,
                         size_t length) { assert(data); feed_child({data, length}); }
         void feed_child(std::string_view const& str);
@@ -1221,9 +1323,6 @@ public:
                 return _cell_is_selected_log(lcol, row);
         }
 
-
-        void reset_default_attributes(bool reset_osc);
-
         void ensure_font();
         void update_font();
         void apply_font_metrics(int cell_width_unscaled,
@@ -1314,6 +1413,13 @@ public:
         inline constexpr void emit_text_scrolled(long delta) const noexcept { }
 
 #endif /* WITH_A11Y && VTE_GTK == 3*/
+
+        bool m_no_legacy_signals{false};
+
+        void set_no_legacy_signals() noexcept
+        {
+                m_no_legacy_signals = true;
+        }
 
         void emit_pending_signals();
         void emit_increase_font_size();
@@ -1463,11 +1569,18 @@ public:
         long get_cell_width()  { ensure_font(); return m_cell_width;  }
 
         vte::color::rgb const* get_color(int entry) const;
+        vte::color::rgb const* get_color(color_palette::ColorPaletteIndex entry) const noexcept;
+        auto get_color_opt(color_palette::ColorPaletteIndex entry) const noexcept -> std::optional<vte::color::rgb>;
         void set_color(int entry,
-                       int source,
+                       color_palette::ColorSource source,
+                       vte::color::rgb const& proposed);
+        void set_color(color_palette::ColorPaletteIndex entry,
+                       color_palette::ColorSource source,
                        vte::color::rgb const& proposed);
         void reset_color(int entry,
-                         int source);
+                         color_palette::ColorSource source);
+        void reset_color(color_palette::ColorPaletteIndex entry,
+                         color_palette::ColorSource source);
 
         bool set_audible_bell(bool setting);
         bool set_text_blink_mode(TextBlinkMode setting);
@@ -1505,6 +1618,7 @@ public:
         bool set_cursor_style(CursorStyle style);
         bool set_delete_binding(EraseMode binding);
         auto delete_binding() const noexcept { return m_delete_binding; }
+        bool set_enable_a11y(bool setting);
         bool set_enable_bidi(bool setting);
         bool set_enable_shaping(bool setting);
         bool set_encoding(char const* codeset,
@@ -1584,11 +1698,6 @@ public:
         inline void erase_characters(long count,
                                      bool use_basic = false);
 
-        template<unsigned int redbits, unsigned int greenbits, unsigned int bluebits>
-        inline bool seq_parse_sgr_color(vte::parser::Sequence const& seq,
-                                        unsigned int& idx,
-                                        uint32_t& color) const noexcept;
-
         inline void move_cursor_up(vte::grid::row_t rows);
         inline void move_cursor_down(vte::grid::row_t rows);
         inline void move_cursor_backward(vte::grid::column_t columns);
@@ -1602,10 +1711,7 @@ public:
         inline void erase_in_display(vte::parser::Sequence const& seq);
         inline void erase_in_line(vte::parser::Sequence const& seq);
 
-        unsigned int checksum_area(vte::grid::row_t start_row,
-                                   vte::grid::column_t start_col,
-                                   vte::grid::row_t end_row,
-                                   vte::grid::column_t end_col);
+        unsigned int checksum_area(grid_rect rect);
 
         void select_text(vte::grid::column_t start_col,
                          vte::grid::row_t start_row,
@@ -1642,45 +1748,78 @@ public:
                    ...) noexcept G_GNUC_PRINTF(5, 6);
 
         /* OSC handler helpers */
-        bool get_osc_color_index(int osc,
-                                 int value,
-                                 int& index) const noexcept;
         void set_color_index(vte::parser::Sequence const& seq,
                              vte::parser::StringTokeniser::const_iterator& token,
                              vte::parser::StringTokeniser::const_iterator const& endtoken,
-                             int number,
-                             int index,
-                             int index_fallback,
+                             std::optional<int> number,
+                             osc_colors::OSCColorIndex index,
                              int osc) noexcept;
+        auto resolve_reported_color(osc_colors::OSCColorIndex index) const noexcept -> std::optional<vte::color::rgb>;
+        void parse_termprop(vte::parser::Sequence const& seq,
+                            std::string_view const& str,
+                            bool& set,
+                            bool& query) noexcept;
+        #if VTE_DEBUG
+        void reply_termprop_query(vte::parser::Sequence const& seq,
+                                  vte::terminal::TermpropInfo const* info);
+        #endif
 
         /* OSC handlers */
         void set_color(vte::parser::Sequence const& seq,
                        vte::parser::StringTokeniser::const_iterator& token,
                        vte::parser::StringTokeniser::const_iterator const& endtoken,
+                       osc_colors::OSCValuedColorSequenceKind osc_kind,
                        int osc) noexcept;
         void set_special_color(vte::parser::Sequence const& seq,
                                vte::parser::StringTokeniser::const_iterator& token,
                                vte::parser::StringTokeniser::const_iterator const& endtoken,
-                               int index,
-                               int index_fallback,
+                               color_palette::ColorPaletteIndex index,
                                int osc) noexcept;
         void reset_color(vte::parser::Sequence const& seq,
                          vte::parser::StringTokeniser::const_iterator& token,
                          vte::parser::StringTokeniser::const_iterator const& endtoken,
-                         int osc) noexcept;
-        void set_current_directory_uri(vte::parser::Sequence const& seq,
-                                       vte::parser::StringTokeniser::const_iterator& token,
-                                       vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept;
-        void set_current_file_uri(vte::parser::Sequence const& seq,
-                                  vte::parser::StringTokeniser::const_iterator& token,
-                                  vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept;
+                         osc_colors::OSCValuedColorSequenceKind osc_kind) noexcept;
+        void set_termprop_uri(vte::parser::Sequence const& seq,
+                              vte::parser::StringTokeniser::const_iterator& token,
+                              vte::parser::StringTokeniser::const_iterator const& endtoken,
+                              int termprop_id,
+                              PendingChanges legacy_pending_change) noexcept;
         void set_current_hyperlink(vte::parser::Sequence const& seq,
                                    vte::parser::StringTokeniser::const_iterator& token,
                                    vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept;
         void set_current_shell_integration_mode(vte::parser::Sequence const& seq,
                                                 vte::parser::StringTokeniser::const_iterator& token,
                                                 vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept;
+        void vte_termprop(vte::parser::Sequence const& seq,
+                          vte::parser::StringTokeniser::const_iterator& token,
+                          vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept;
 
+        void urxvt_extension(vte::parser::Sequence const& seq,
+                             vte::parser::StringTokeniser::const_iterator& token,
+                             vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept;
+        void conemu_extension(vte::parser::Sequence const& seq,
+                              vte::parser::StringTokeniser::const_iterator& token,
+                              vte::parser::StringTokeniser::const_iterator const& endtoken) noexcept;
+
+        // helpers
+
+        grid_rect collect_rect(vte::parser::Sequence const&,
+                               unsigned&) noexcept;
+
+        void copy_rect(grid_rect srect,
+                       grid_point dest) noexcept;
+
+        void fill_rect(grid_rect rect,
+                       char32_t c,
+                       VteCellAttr attr) noexcept;
+
+        template<class P>
+        void rewrite_rect(grid_rect rect,
+                          bool as_rectangle,
+                          bool only_attrs,
+                          P&& pen) noexcept;
+
+        // ringview
         void ringview_update();
 
         /* Sequence handlers */
@@ -1715,5 +1854,6 @@ _vte_double_equal(double a,
 }
 
 #define VTE_TEST_FLAG_DECRQCRA (G_GUINT64_CONSTANT(1) << 0)
+#define VTE_TEST_FLAG_TERMPROP (G_GUINT64_CONSTANT(1) << 1)
 
 extern uint64_t g_test_flags;

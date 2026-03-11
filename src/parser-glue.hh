@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <string>
+#include <optional>
 
 #include "parser.hh"
 
@@ -140,7 +141,7 @@ public:
         }
 
         /*
-         * append_parms:
+         * append_params:
          * @params:
          *
          * Appends the parameters from @params to @this. Parameter values must be
@@ -175,9 +176,9 @@ public:
 
                         int* arg = &m_seq.args[m_seq.n_args++];
                         *arg = vte_seq_arg_init(std::min(p, 0xffff));
-                        vte_seq_arg_finish(arg, false);
+                        vte_seq_arg_finish(arg, true);
                 }
-                vte_seq_arg_refinish(&m_seq.args[m_seq.n_args - 1], true);
+                vte_seq_arg_refinish(&m_seq.args[m_seq.n_args - 1], false);
         }
 
         inline void set_string(string_type const& str) noexcept
@@ -269,14 +270,14 @@ private:
                         auto n_args = m_seq.n_args;
                         for (unsigned int n = 0; n < n_args; n++) {
                                 auto arg = vte_seq_arg_value(m_seq.args[n]);
-                                if (n > 0) {
-                                        s.push_back(";:"[vte_seq_arg_nonfinal(m_seq.args[n])]);
-                                }
-                                if (arg >= 0) {
+                                if (arg != -1) {
                                         char buf[16];
                                         int l = g_snprintf(buf, sizeof(buf), "%d", arg);
                                         for (int j = 0; j < l; j++)
                                                 s.push_back(buf[j]);
+                                }
+                                if (n + 1 < n_args) {
+                                        s.push_back(vte_seq_arg_nonfinal(m_seq.args[n]) ? ':' : ';');
                                 }
                         }
                         break;
@@ -427,6 +428,7 @@ public:
 class StringTokeniser {
 public:
         using string_type = std::string;
+        using string_view_type = std::string_view;
         using char_type = std::string::value_type;
 
 private:
@@ -548,9 +550,10 @@ public:
                 /*
                  * number:
                  *
-                 * Returns the value of the iterator as a number, or -1
-                 *   if the string could not be parsed as a number, or
-                 *   the parsed values exceeds the uint16_t range.
+                 * Returns true and stores the value of the iterator as a number
+                 *   (-1 for a default param), or false if the string could not
+                 *   be parsed as a number, or the parsed values exceeds the
+                 *   uint16_t range.
                  *
                  * Returns: true if a number was parsed
                  */
@@ -576,6 +579,23 @@ public:
 
                         /* All consumed? */
                         return i == s;
+                }
+
+                /*
+                 * number:
+                 *
+                 * Returns the value of the iterator as an optional containing
+                 *   the number (or -1 for a default param), or nullopt
+                 *   if the string could not be parsed as a number, or
+                 *   the parsed values exceeds the uint16_t range.
+                 *
+                 * Returns: a valued optional if a number was parsed, or nullopt
+                 */
+                auto number() const noexcept -> std::optional<int> {
+                        auto v = 0;
+                        if (number(v)) [[likely]]
+                                return std::make_optional(v);
+                        return std::nullopt;
                 }
 
                 inline size_type size() const noexcept
@@ -604,6 +624,16 @@ public:
                 inline string_type string_remaining() const noexcept
                 {
                         return m_string->substr(m_position);
+                }
+
+                /*
+                 * string_remaining:
+                 *
+                 * Returns the whole string left, including possibly more separators.
+                 */
+                inline string_view_type string_view_remaining() const noexcept
+                {
+                        return string_view_type{*m_string}.substr(m_position);
                 }
 
                 inline void append(string_type& str) const noexcept

@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 
 #include "debug.h"
 
@@ -1274,6 +1275,18 @@ public:
                 return (st() & 0x80) != 0;
         }
 
+        /* is_st_bel:
+         *
+         * Whether the control string was terminated with a BEL. This is only supported
+         * for OSC, for xterm compatibility, and is deprecated.
+         *
+         * Returns: true iff the terminator was BEL
+         */
+        inline constexpr bool is_st_bel() const noexcept
+        {
+                return st() == 0x7;
+        }
+
         /* is_ripe:
          *
          * Whether the control string is complete.
@@ -1558,6 +1571,103 @@ public:
                 }
 
                 return idx <= next(start_idx);
+        }
+
+        /* collect_number:
+         * @start_idx:
+         *
+         * Collects a big number from a run of subparameters ending in a
+         * final parameter.
+         * This allows encoding numbers larger than the 16-bit parameter
+         * limit, by using a run of subparameters which encode the number
+         * in big-endian. Default subparams have value 0.
+         *
+         * Returns: the number, or %nullopt if the number exceeds the
+         *   limits of uint64_t.
+         */
+        inline constexpr std::optional<uint64_t> collect_number(unsigned int start_idx) const noexcept
+        {
+                auto idx = start_idx;
+                auto const next_idx = next(start_idx);
+
+                // No more than 4 16-bit parameters can be combined
+                // without exceeding the 64-bit number limits.
+                if ((next_idx - idx) > 4)
+                        return std::nullopt;
+
+                // No leading default (empty) subparams allowed
+                if (next_idx != (idx + 1) && param_default(idx))
+                        return std::nullopt;
+
+                auto value = uint64_t{0};
+                for (auto i = idx; i < next_idx; ++i) {
+                        value <<= 16;
+                        value += param(i, 0);
+                }
+
+                return value;
+        }
+
+        /* collect_char:
+         * @idx:
+         * @default_v: return value for default parameter
+         * @zero_v: return value for zero parameter
+         *
+         * Collects an unicode character from a parameter or a run of
+         * subparameters ending in a final parameter.
+         *
+         * A default final parameter returns the character @default_v;
+         * a final zeroed parameter returns the charcacter @zero_v if
+         * not -1, or @default_v if -1.
+         *
+         * This allows encoding characters outside plane 0 using
+         * either the big number encoding (see collect_number() above),
+         * or as a pair of surrogates.
+         *
+         * Returns: the character, or %nullopt for incorrect encoding,
+         *   or if the character specified by the params is a control
+         *   character, or a surrogate
+         */
+        inline constexpr std::optional<char32_t> collect_char(unsigned int idx,
+                                                              int default_v = 0x20,
+                                                              int zero_v = -1) const noexcept
+        {
+                auto const n_params = next(idx) - idx;
+
+                auto v = uint32_t{0};
+                if (n_params == 1) {
+                        auto pv = param(idx);
+                        if (pv == 0)
+                                pv = zero_v;
+
+                        v = pv != -1 ? pv : default_v;
+                } else if (n_params == 2) {
+                        auto p0 = param(idx, 0);
+                        auto p1 = param(idx + 1, 0);
+
+                        // Surrogate pair
+                        if ((p0 & 0xfffffc00u) == 0xd800u &&
+                            (p1 & 0xfffffc00u) == 0xdc00u) {
+                                v = ((p0 & 0x3ffu) << 10) + (p1 & 0x3ffu) + 0x10000u;
+                        } else { // big number as above
+                                v = p0 << 16 | p1;
+                        }
+                } else if (n_params > 2) {
+                        v = 0;
+                }
+
+                auto valid = [](uint32_t c) constexpr noexcept -> bool
+                {
+                        return c < 0x110000u && // plane 0 ... plane 17
+                                (c & 0xffffff60u) != 0 && // not C0 nor C1
+                                c != 0x7fu && // not DEL
+                                (c & 0xfffff800u) != 0xd800u; // not a surrogate
+                };
+
+                if (valid(v))
+                        return char32_t{v};
+
+                return std::nullopt;
         }
 
         inline explicit operator bool() const { return m_seq != nullptr; }
