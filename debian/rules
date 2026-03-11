@@ -16,7 +16,8 @@ CONFFLAGS_deb = \
 	-Ddocs=true \
 	-Dgir=true \
 	-Dgnutls=true \
-	-Dgtk4=true
+	-Dgtk4=true \
+	-Dvapi=false
 
 CONFFLAGS_udeb = \
 	-Ddocs=false \
